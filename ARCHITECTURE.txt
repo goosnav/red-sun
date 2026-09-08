@@ -1,0 +1,87 @@
+RED SUN — ARCHITECTURE
+======================
+
+One shared core, two thin surfaces, one launcher contract.
+
+    Native launcher (macOS .app / Windows .exe / Linux .AppImage)
+        |  reads app/launcher/manifest.json, bundles a pinned uv,
+        |  installs managed Python 3.12.10 + locked Pillow into app data,
+        |  runs app/launcher/bootstrap.py, waits for /health/ready,
+        |  then points the browser at the GUI
+        v
+    red_sun.start  ----------------------------------------------- app/src/red_sun/start.py
+        binds 127.0.0.1 (OS-chosen port), publishes the URL, serves forever
+        v
+    red_sun.server  (stdlib http.server, plain HTML forms, no JS) -- app/src/red_sun/server.py
+        GET  /                 the form
+        POST /jobs             validate -> start a batch thread -> 303 /jobs/<id>
+        GET  /jobs/<id>        progress (<meta refresh> + <progress>) or results with previews
+        GET  /jobs/<id>/out/n  one output file (or ?preview=1: grid-resolution PNG)
+        POST /browse/{file,folder}   native picker via a tkinter subprocess (red_sun/pick.py)
+        POST /jobs/<id>/reveal open the output folder in Finder/Explorer/xdg-open
+        POST /quit             clean shutdown
+        GET  /health/ready     readiness for the launcher
+        v
+    red_sun.core  (pure Pillow, no I/O framework) ----------------- app/src/red_sun/core.py
+        Settings  -> process(image) -> Processed(image, mode, colors)
+        collect_files / run_batch(files, out_dir, settings, progress)
+        ^
+    red_sun.__main__  CLI: python -m red_sun <file-or-folder> [...] -- same core, same options
+
+PIPELINE (core.process)
+-----------------------
+    1. flatten: EXIF rotate, composite transparency onto white, RGB
+    2. resize_down to the pixel grid width (LANCZOS; the only resampling in the whole pipeline)
+    3. despeckle (default on): 5x5 median  — edge-preserving, removes grain before it can become speckle
+    4. color:  optional fixed contrast boost (1.3x, hue-safe) -> quantize to a fixed palette
+               (MS Paint 28 / Windows 16) or adaptive median-cut N colors, dither OFF by default
+       bw:     optional autocontrast -> Otsu (or manual) threshold -> 1-bit
+    5. despeckle: 3x3 mode filter on the indexed image (most common neighbour; never blends colors)
+    6. integer_upscale: NEAREST by round(output_width / grid_width)  -> every block is one flat color
+    7. save indexed PNG ("P" or "1" mode) and/or indexed BMP
+
+    Output size is grid x factor, so 640 grid + 3200 target = exactly 5x5 blocks.
+
+SECURITY MODEL (local app)
+--------------------------
+    - Server binds 127.0.0.1 only; port chosen by the OS (or GOOSNAV_PORT_PREFERENCE / RED_SUN_PORT).
+    - Every POST needs the per-launch session token (hidden form field) AND a same-origin check
+      (Sec-Fetch-Site, else Origin/Referer vs Host). A web page in another tab cannot drive the app.
+    - The server never serves a user-supplied path. Outputs are served by job id + index only.
+    - Subprocesses (picker, reveal) get explicit argv; nothing is ever passed through a shell.
+    - Form bodies are capped at 64 KB. All rendered text is HTML-escaped.
+    - No secrets, no network calls, no telemetry. Source images are never modified.
+
+DATA LOCATIONS
+--------------
+    Outputs:          <source folder>/red_sun/  (or the folder typed in the form / --out)
+    Launcher runtime: macOS ~/Library/Application Support/Red Sun, Windows %LOCALAPPDATA%\Red Sun,
+                      Linux ~/.local/share/Red Sun  (python/, runtimes/, cache/, logs/, runtime/)
+    Source checkout:  no writes except an optional .venv/ created by run.sh without uv.
+
+REPOSITORY MAP
+--------------
+    app/                    the M1a payload; launchers only ever touch this directory
+      pyproject.toml        Pillow pinned, no-build, six required OS/arch environments; uv.lock committed
+      src/red_sun/          core.py, server.py, start.py, pick.py, __main__.py
+      static/               style.css (class-free baseline), icon.png, favicon.ico
+      launcher/             manifest.json, bootstrap.py, checksums.sha256, tools/<os-arch>/uv (downloaded)
+    packaging/              build-host only, never shipped inside app/
+      launcher/             vendored Goosnav M1a supervisor (Go) + build/fetch/package scripts
+      make_icon.py          pixel-art sun -> AppIcon.png/.ico/.icns + app/static icons
+      build_release.py      icons -> uv tools -> go test -> images this host can build -> ZIP
+      release/README.txt    the customer-facing readme placed at the ZIP root
+    tests/                  test_core.py (pytest), smoke.py (real HTTP end-to-end)
+    run.sh / run.command / run.ps1   source-checkout launchers (uv, or python3 + venv)
+
+WHY THESE CHOICES
+-----------------
+    stdlib http.server, not FastAPI:  one dependency (Pillow) means the lock resolves for all six
+        targets with prebuilt wheels and first launch downloads ~5 MB, not 50. Swap server.py for a
+        framework if an API surface is ever needed; core.py does not change.
+    zero JavaScript:  every action is a form POST; progress is <meta refresh>. Works with CSS off,
+        with a screen reader, and looks like 1999 on purpose.
+    native picker via tkinter subprocess:  gives a real filesystem path, so batch output lands next
+        to the source; the text field is the always-available fallback.
+    integer upscale only:  a "poster" is the same indexed image at 5x or 10x; no resampling, no
+        smoothing, no new colors.

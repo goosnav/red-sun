@@ -1,0 +1,85 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*
+secrets/
+
+# User-generated and runtime data
+user-data/
+userdata/
+workspaces/
+projects/
+uploads/
+exports/
+support-bundles/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# JavaScript
+node_modules/
+.pnpm-store/
+.vite/
+coverage/
+playwright-report/
+test-results/
+
+# Tauri/Rust
+apps/desktop/src-tauri/target/
+target/
+
+# Mobile
+.expo/
+apps/mobile/.expo/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*.local.json
+
+# Temporary/cache
+.cache/
+tmp/
+temp/
+*.tmp
+
+# Private development and agent material
+/dev/
+/dev-private/
+/AGENTS.md
+/CLAUDE.md
+/CODEX.md
+/GEMINI.md
+
+# Red Sun release artifacts (built by packaging/build_release.py, published on GitHub Releases)
+/dist/
+/app/launcher/tools/*/uv
+/app/launcher/tools/*/uv.exe
+/packaging/icons/*.iconset/
+/packaging/launcher/supervisor/*.syso
+/CLAUDE_RUN_SUMMARY.md
+/AGENT_FAILURE_HANDOFF.md
+/.claude/
