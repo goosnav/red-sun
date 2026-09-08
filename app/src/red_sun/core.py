@@ -31,7 +31,7 @@ PALETTES = {"paint": PAINT_28, "win16": WIN_16, "websafe": WEB_216}
 MATTES = {"white": (255, 255, 255), "gray": (204, 204, 204), "black": (0, 0, 0)}  # gray = Netscape gray
 
 MODES = ("auto", "color", "bw")
-PALETTE_CHOICES = ("adaptive", "paint", "win16", "websafe")
+PALETTE_CHOICES = ("dominant", "adaptive", "paint", "win16", "websafe")
 DITHERS = ("none", "diffusion", "pattern", "noise")
 FORMATS = ("png", "bmp", "gif", "all")
 EXTENSIONS = {"png": [".png"], "bmp": [".bmp"], "gif": [".gif"], "all": [".png", ".bmp", ".gif"]}
@@ -48,13 +48,13 @@ RUN_RE = re.compile(r"red-sun-run-(\d+)$")
 @dataclass
 class Settings:
     mode: str = "auto"              # auto | color | bw
-    palette: str = "adaptive"       # adaptive | paint | win16 | websafe
-    colors: int = 16                # adaptive palette size
+    palette: str = "dominant"       # dominant | adaptive | paint | win16 | websafe
+    colors: int = 16                # bucket cap for dominant, palette size for adaptive
     dither: str = "none"            # none | diffusion | pattern | noise
     dither_strength: int = 60       # % amplitude for pattern/noise
-    sharpen: bool = True            # unsharp mask before the palette snap
+    sharpen: bool = False           # unsharp mask before the palette snap (photos; halos on flat art)
     despeckle: bool = False         # 3x3 median before everything else
-    contrast: bool = True           # B&W: autocontrast stretch; color: fixed hue-safe boost
+    contrast: bool = False          # B&W: autocontrast stretch; color: fixed hue-safe boost
     threshold: int | None = None    # B&W cut 0-255; None = Otsu; 128 = Photoshop's 50%
     matte: str = "white"            # background for transparent pixels: white | gray | black
     grid_width: int | None = None   # optional downscale to a chunky pixel grid; None = native
@@ -79,7 +79,8 @@ class Settings:
                 raise ValueError(message)
 
     def tag(self, mode: str) -> str:
-        name = "bw" if mode == "bw" else {"paint": "paint28", "win16": "win16", "websafe": "web216"}.get(self.palette, f"{self.colors}c")
+        names = {"paint": "paint28", "win16": "win16", "websafe": "web216", "adaptive": f"{self.colors}c", "dominant": f"flat{self.colors}"}
+        name = "bw" if mode == "bw" else names[self.palette]
         return name if self.dither == "none" else f"{name}-{self.dither}"
 
 
@@ -172,6 +173,160 @@ def used_colors(p_img: Image.Image) -> list[tuple[int, int, int]]:
     return [tuple(pal[3 * i:3 * i + 3]) for _, i in sorted(p_img.getcolors(256), key=lambda c: c[1])]
 
 
+MIN_BUCKET_SHARE = 0.002   # a colour must fill 0.2% of the flat pixels to earn a bucket
+MIN_BUCKET_DISTANCE = 24   # RGB distance below which two colours are the same bucket (near-identical shades merge)
+FLAT_TOLERANCE = 24        # a pixel is "flat" when its 3x3 neighbourhood varies less than this per channel
+RIDGE_WIDTH = 3            # strokes up to this many pixels wide still vote for their colour
+BLEND_SAT = 32             # max-min channel spread below which a pixel can be an ink/paper blend
+BLEND_PROTECT = 16         # a pixel this close (per channel) to its nearest bucket is that colour, not a blend
+PAPER_LUMA = 200           # light neutral buckets (paper, white) that blends may resolve to, besides ink
+
+
+def channel_max(rgb: Image.Image) -> Image.Image:
+    r, g, b = rgb.split()
+    return ImageChops.lighter(ImageChops.lighter(r, g), b)
+
+
+def vote_mask(rgb: Image.Image) -> Image.Image:
+    """255 for pixels that are a colour of the artwork, 0 for edge blends.
+
+    A pixel votes when its 3x3 neighbourhood is one colour (flat fill, thick stroke) or when it sits in a
+    stroke up to RIDGE_WIDTH pixels wide: the pixels just outside the run, on both sides, match each other
+    but not it (ink on paper). An anti-aliased edge pixel is neither: the two sides of a ramp differ.
+    """
+    spread = channel_max(ImageChops.subtract(rgb.filter(ImageFilter.MaxFilter(3)), rgb.filter(ImageFilter.MinFilter(3))))
+    votes = spread.point(lambda v: 255 if v < FLAT_TOLERANCE else 0)
+    for dx, dy in ((1, 0), (0, 1)):
+        for width in range(1, RIDGE_WIDTH + 1):
+            for i in range(width):  # the pixel is the i-th of a run of `width`
+                before = ImageChops.offset(rgb, (i + 1) * dx, (i + 1) * dy)
+                after = ImageChops.offset(rgb, -(width - i) * dx, -(width - i) * dy)
+                sides_match = channel_max(ImageChops.difference(before, after)).point(lambda v: 255 if v < FLAT_TOLERANCE else 0)
+                stands_out = channel_max(ImageChops.difference(rgb, before)).point(lambda v: 255 if v >= FLAT_TOLERANCE else 0)
+                run = ImageChops.multiply(sides_match, stands_out)
+                for k in range(-i, width - i):  # every pixel of the run must be the same colour as this one
+                    if k:
+                        member = ImageChops.offset(rgb, -k * dx, -k * dy)
+                        same = channel_max(ImageChops.difference(rgb, member)).point(lambda v: 255 if v < FLAT_TOLERANCE else 0)
+                        run = ImageChops.multiply(run, same)
+                votes = ImageChops.lighter(votes, run)
+    return votes
+
+
+def dominant_palette(rgb: Image.Image, max_colors: int) -> list[tuple[int, int, int]]:
+    """The image's real flat colours, most common first: the Photoshop Indexed-Color look for comics and art.
+
+    Only pixels inside flat regions vote (an edge pixel is a blend, not a colour of the artwork). Votes are
+    binned at 16 levels per channel; bins are taken by popularity, merged when closer than
+    MIN_BUCKET_DISTANCE, and ignored below MIN_BUCKET_SHARE. Near-black/near-white snap to pure.
+    """
+    small = rgb
+    while small.width * small.height > 1_500_000:  # subsample, never blend: no invented colours
+        small = small.resize((small.width // 2, small.height // 2), Image.Resampling.NEAREST)
+    mask = vote_mask(small)
+    if mask.histogram()[255] >= 0.02 * small.width * small.height:
+        rgba = Image.merge("RGBA", (*small.split(), mask))
+        votes = [(n, (r, g, b)) for n, (r, g, b, a) in rgba.getcolors(small.width * small.height) if a == 255]
+    else:  # nothing is flat (a very noisy photo): every pixel votes
+        votes = small.getcolors(small.width * small.height)
+    total = sum(n for n, _ in votes)
+    bins: dict[tuple[int, int, int], list[int]] = {}
+    for count, (r, g, b) in votes:
+        acc = bins.setdefault((r >> 4, g >> 4, b >> 4), [0, 0, 0, 0])
+        acc[0] += count
+        acc[1] += count * r
+        acc[2] += count * g
+        acc[3] += count * b
+    candidates = sorted(((n, (sr / n, sg / n, sb / n)) for n, sr, sg, sb in bins.values()), reverse=True)
+    chosen: list[tuple[float, float, float]] = []
+    # Forced black and white (as in Photoshop): ink and paper are never lost, even as hairlines.
+    everyone = small.getcolors(small.width * small.height)
+    pixels = small.width * small.height
+    for pure, near in (((0.0, 0.0, 0.0), lambda c: max(c) < 16), ((255.0, 255.0, 255.0), lambda c: min(c) >= 240)):
+        if sum(n for n, c in everyone if near(c)) >= MIN_BUCKET_SHARE * pixels:
+            chosen.append(pure)
+    for n, col in candidates:
+        if len(chosen) >= 2 and n / total < MIN_BUCKET_SHARE:
+            break
+        if all(sum((a - b) ** 2 for a, b in zip(col, c)) >= MIN_BUCKET_DISTANCE ** 2 for c in chosen):
+            chosen.append(col)
+        if len(chosen) == max_colors:
+            break
+    palette: list[tuple[int, int, int]] = []
+    for col in chosen:
+        if max(col) <= 40:          # ink is ink
+            col = (0.0, 0.0, 0.0)
+        elif min(col) >= 244:       # bright white paper (cream stays cream)
+            col = (255.0, 255.0, 255.0)
+        rounded = tuple(int(round(v)) for v in col)
+        if rounded not in palette:
+            palette.append(rounded)
+    return palette
+
+
+def luma(c: tuple[int, int, int]) -> float:
+    return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+
+
+def blend_snap(out: Image.Image, rgb: Image.Image, colors: list[tuple[int, int, int]]) -> Image.Image:
+    """Ink/paper blends become ink or paper. A gray-ish pixel that is not close to any bucket is a blend
+    (a hairline core, an anti-alias step); it may only resolve to black or a light neutral bucket, never to
+    the night-sky navy or the brown that happens to be nearest in RGB. Real bucket colours are untouched."""
+    targets = [i for i, c in enumerate(colors) if c == (0, 0, 0) or (max(c) - min(c) <= FLAT_TOLERANCE and luma(c) >= PAPER_LUMA)]
+    if len(targets) < 2 or len(targets) == len(colors):
+        return out
+    r, g, b = rgb.split()
+    spread = ImageChops.subtract(ImageChops.lighter(ImageChops.lighter(r, g), b), ImageChops.darker(ImageChops.darker(r, g), b))
+    grayish = spread.point(lambda v: 255 if v < BLEND_SAT else 0)
+    nearest = out.convert("RGB")
+    far = channel_max(ImageChops.difference(rgb, nearest)).point(lambda v: 255 if v >= BLEND_PROTECT else 0)
+    sub = rgb.quantize(palette=palette_image([colors[i] for i in targets]), dither=Image.Dither.NONE)
+    lut = [targets[k] if k < len(targets) else targets[0] for k in range(256)]
+    out.paste(Image.frombytes("P", sub.size, bytes(lut[k] for k in sub.getdata())), None, ImageChops.multiply(grayish, far))
+    return out
+
+
+def snap_edges(q: Image.Image, rgb: Image.Image, mask: Image.Image, colors: list[tuple[int, int, int]]) -> Image.Image:
+    """Re-snap edge pixels (mask 0) to the nearest bucket among their trusted neighbours, growing inward.
+
+    A blend between ink and paper is globally nearest to whatever mid-tone the image happens to have
+    (a brown fringe on every letter); it can only belong to one of the two sides it sits between.
+    Pixels snapped in one pass become trusted for the next, so wider blend bands resolve from both sides.
+    """
+    w, h = q.size
+    qpx, spx = q.load(), rgb.load()
+    n = len(colors)
+    trusted = bytearray(mask.getdata())
+    pending = [i for i, v in enumerate(trusted) if not v]
+    for _ in range(6):
+        if not pending:
+            break
+        decided = []
+        for i in pending:
+            x, y = i % w, i // w
+            r, g, b = spx[x, y]
+            best, best_d = None, None
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < w and 0 <= ny < h and trusted[ny * w + nx]:
+                        c = qpx[nx, ny]
+                        cr, cg, cb = colors[c if c < n else 0]
+                        d = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2
+                        if best_d is None or d < best_d:
+                            best, best_d = c, d
+            if best is not None:
+                decided.append((i, best))
+        if not decided:
+            break
+        for i, best in decided:
+            qpx[i % w, i // w] = best
+            trusted[i] = 1
+        done = {i for i, _ in decided}
+        pending = [i for i in pending if i not in done]
+    return q
+
+
 def count_colors(img: Image.Image) -> int:
     return len(img.convert("RGB").getcolors(maxcolors=1 << 20) or [])
 
@@ -219,7 +374,9 @@ def prepare(img: Image.Image, s: Settings) -> Image.Image:
 def quantize_color(rgb: Image.Image, s: Settings) -> Image.Image:
     if s.contrast:
         rgb = ImageEnhance.Contrast(rgb).enhance(1.3)  # fixed and hue-safe: a mostly-white logo keeps its red
-    if s.palette == "adaptive":
+    if s.palette == "dominant":
+        colors = dominant_palette(rgb, s.colors)
+    elif s.palette == "adaptive":
         base = rgb.quantize(colors=s.colors, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
         colors = used_colors(base)
     else:
@@ -228,7 +385,13 @@ def quantize_color(rgb: Image.Image, s: Settings) -> Image.Image:
     if offset is not None:
         rgb = add_offset(rgb, offset)
     diffusion = Image.Dither.FLOYDSTEINBERG if s.dither == "diffusion" else Image.Dither.NONE
-    return rgb.quantize(palette=palette_image(colors), dither=diffusion)
+    out = rgb.quantize(palette=palette_image(colors), dither=diffusion)
+    if s.palette == "dominant" and s.dither == "none":
+        out = blend_snap(out, rgb, colors)
+        anchors = vote_mask(rgb)
+        if anchors.histogram()[255] >= 0.02 * rgb.width * rgb.height:  # flat art: edges belong to one of their two sides
+            out = snap_edges(out, rgb, anchors, colors)
+    return out
 
 
 def quantize_bw(rgb: Image.Image, s: Settings) -> Image.Image:

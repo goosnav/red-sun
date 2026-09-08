@@ -76,7 +76,7 @@ def defaults() -> dict[str, str]:
     s = core.Settings()
     return {
         "path": "", "out_dir": "", "mode": s.mode, "palette": s.palette, "colors": str(s.colors),
-        "dither": s.dither, "dither_strength": str(s.dither_strength), "sharpen": "on", "contrast": "on",
+        "dither": s.dither, "dither_strength": str(s.dither_strength),
         "threshold": "", "matte": s.matte, "grid_width": "", "min_output_width": str(s.min_output_width), "fmt": s.fmt,
     }
 
@@ -111,7 +111,7 @@ def settings_from(f: dict[str, str]) -> core.Settings:
         return int(value) if value else default
 
     s = core.Settings(
-        mode=f.get("mode", "auto"), palette=f.get("palette", "adaptive"), colors=num("colors", 16),
+        mode=f.get("mode", "auto"), palette=f.get("palette", "dominant"), colors=num("colors", 16),
         dither=f.get("dither", "none"), dither_strength=num("dither_strength", 60),
         sharpen="sharpen" in f, despeckle="despeckle" in f, contrast="contrast" in f,
         threshold=num("threshold", None), matte=f.get("matte", "white"), grid_width=num("grid_width", None),
@@ -285,14 +285,15 @@ def render_form(f: dict[str, str], problem: str | None = None) -> str:
 <p>
 <label for="palette">Palette</label>
 <select id="palette" name="palette">
-{option('adaptive', 'Adaptive (best N colors from the image)', f.get('palette', 'adaptive'))}
-{option('paint', 'MS Paint classic (28 colors)', f.get('palette', 'adaptive'))}
-{option('win16', 'Windows 16 colors', f.get('palette', 'adaptive'))}
-{option('websafe', 'Web-safe 216 (Netscape)', f.get('palette', 'adaptive'))}
+{option('dominant', 'Flat buckets: the image’s own colors, up to N (comics, art)', f.get('palette', 'dominant'))}
+{option('adaptive', 'Adaptive median cut, exactly N (photos)', f.get('palette', 'dominant'))}
+{option('paint', 'MS Paint classic (28 colors)', f.get('palette', 'dominant'))}
+{option('win16', 'Windows 16 colors', f.get('palette', 'dominant'))}
+{option('websafe', 'Web-safe 216 (Netscape)', f.get('palette', 'dominant'))}
 </select>
 <label for="colors">N =</label>
 <input id="colors" name="colors" type="number" min="2" max="256" value="{e(f.get('colors', '16'))}" size="4">
-<small>Photoshop-style: 9–16 colors, little or no dither.</small>
+<small>Every pixel is snapped to one bucket; edge blends never get a bucket of their own.</small>
 </p>
 <p>
 <label for="dither">Dither</label>
@@ -306,7 +307,7 @@ def render_form(f: dict[str, str], problem: str | None = None) -> str:
 <input id="dither_strength" name="dither_strength" type="number" min="0" max="100" value="{e(f.get('dither_strength', '60'))}" size="3"> %
 <small>(pattern and noise only)</small>
 </p>
-<p><label><input type="checkbox" name="sharpen"{checked(f, 'sharpen')}> Sharpen before the palette snap (unsharp mask; crisper edges)</label></p>
+<p><label><input type="checkbox" name="sharpen"{checked(f, 'sharpen')}> Sharpen before the snap (photos only; adds halos on flat art)</label></p>
 <p><label><input type="checkbox" name="contrast"{checked(f, 'contrast')}> Contrast boost (hue-safe)</label></p>
 <p><label><input type="checkbox" name="despeckle"{checked(f, 'despeckle')}> Despeckle (3×3 median; removes grain, costs fine detail)</label></p>
 <p>

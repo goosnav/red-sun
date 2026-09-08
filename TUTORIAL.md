@@ -34,9 +34,10 @@ Everything you set on the form, including the last folder, is remembered the nex
 
 ## 5. Getting the look you want
 
-Red Sun's defaults follow the Photoshop recipe that keeps edges hard: native resolution, an adaptive palette of 16 colours, no dither, sharpen on.
+Red Sun's defaults follow the Photoshop recipe that keeps edges hard: native resolution, **flat buckets** (the image's own colours, up to 16, edge blends excluded, black and white forced in), no dither, no sharpening. Every pixel becomes exactly one bucket colour. The results table tells you how many buckets a file used.
 
-- **Fewer, bolder colours:** *N* = 8 or 9, or *Windows 16 colors*.
+- **Fewer, bolder colours:** lower *N* (the most common colours win), or *Windows 16 colors*.
+- **Photos:** *Adaptive* gives exactly N colours by median cut; *Flat buckets* posterizes a photo into its dominant tones.
 - **Authentic Paint / Netscape:** *MS Paint classic (28)* or *Web-safe 216*.
 - **Classic shading:** *Dither* = *Diffusion* (Floyd–Steinberg grain), *Pattern* (ordered halftone) or *Noise*. Raise *strength* to 100 % for the full-range pattern in black & white; 40–60 % is subtle in colour.
 - **Scans, line art, comics:** *Mode* = *Black & white*. Blank threshold = automatic (Otsu); 128 = Photoshop's 50 %. Higher = more black.
@@ -74,6 +75,7 @@ Click **Quit Red Sun** in the page footer (or Ctrl+C in the terminal for `run.sh
 | "Cannot create the output folder" | The pictures live somewhere read-only (a camera card, a locked share). Choose an **Output folder** you can write to. |
 | "Click Choose folder… and pick the folder with your pictures first" | Nothing was selected; hidden files (leading dot) and non-image files are skipped. |
 | Output looks noisy | Turn *Dither* to *None*, tick *Despeckle*, or use fewer colours. |
+| A small colour detail vanished | It covered less than 0.2% of the image, so it merged into the nearest bucket. Use *Adaptive* for that file, or raise *N* is not enough: the threshold is fixed. |
 | Colours look wrong on a logo | Turn off *Contrast boost*, or use *Adaptive*. |
 | Page never loads at `127.0.0.1` | Another program may be blocking loopback; check the terminal (`run.sh`) or the launcher log for the actual port. |
 

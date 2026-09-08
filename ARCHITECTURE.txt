@@ -35,9 +35,17 @@ PIPELINE (core.process) — the Photoshop "Indexed Color / Bitmap" recipe, at na
     1. flatten: EXIF rotate, composite transparency onto the matte, RGB
     2. optional pixel grid: ONE Lanczos downscale, only when a grid width is given (default: none)
     3. optional despeckle: 3x3 median (default off)
-    4. optional sharpen: unsharp mask r=1, 150%, threshold 2 (default on) — shortens soft edges before the snap
+    4. optional sharpen: unsharp mask r=1, 150%, threshold 2 (default off; photos only)
     5. color:  optional fixed 1.3x contrast (hue-safe)
-               palette = adaptive median-cut N (computed without dither) | MS Paint 28 | Windows 16 | web-safe 216
+               palette = flat buckets (default): vote_mask keeps pixels whose 3x3 neighbourhood is one colour or that
+                         lie in a uniform stroke up to 3 px wide bounded by matching sides (an edge blend is neither:
+                         its two sides differ); votes binned at 16 levels/channel, taken by popularity, merged under
+                         24 RGB units, dropped under 0.2%; black and white forced in when present; capped at N.
+                         After the snap: a gray-ish pixel that is not close to any bucket is an ink/paper blend and may
+                         only resolve to black or a light neutral bucket (a hairline core is ink, not the night-sky navy;
+                         a mid blend is never the brown that happens to be nearest); then remaining edge pixels take the
+                         nearest bucket among their trusted neighbours, growing inward over up to 6 passes.
+                       | adaptive median-cut N | MS Paint 28 | Windows 16 | web-safe 216
                dither  = none | diffusion (Floyd–Steinberg) | pattern (8x8 Bayer field added, then plain snap)
                          | noise (Gaussian field added, then plain snap)
                -> quantize to the exact palette (mode P)

@@ -12,12 +12,12 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="red_sun", description="Sharp, color-indexed MS Paint style bitmaps. Omit INPUT to open the GUI.")
     p.add_argument("input", nargs="?", type=Path, help="image file or folder")
     p.add_argument("--mode", choices=core.MODES, default="auto")
-    p.add_argument("--palette", choices=core.PALETTE_CHOICES, default="adaptive")
-    p.add_argument("--colors", type=int, default=16, help="palette size for --palette adaptive (default 16)")
+    p.add_argument("--palette", choices=core.PALETTE_CHOICES, default="dominant", help="dominant = the image's own flat colours up to N (default)")
+    p.add_argument("--colors", type=int, default=16, help="bucket cap for dominant, palette size for adaptive (default 16)")
     p.add_argument("--dither", choices=core.DITHERS, default="none")
     p.add_argument("--dither-strength", type=int, default=60, help="%% amplitude for pattern/noise (default 60)")
-    p.add_argument("--no-sharpen", action="store_true", help="skip the unsharp mask before the palette snap")
-    p.add_argument("--no-contrast", action="store_true")
+    p.add_argument("--sharpen", action="store_true", help="unsharp mask before the snap (photos; halos on flat art)")
+    p.add_argument("--contrast", action="store_true", help="contrast boost (B&W autocontrast / colour 1.3x)")
     p.add_argument("--despeckle", action="store_true", help="3x3 median before processing")
     p.add_argument("--threshold", type=int, help="black & white cut 0-255 (default: automatic; 128 = Photoshop 50%%)")
     p.add_argument("--matte", choices=tuple(core.MATTES), default="white", help="background for transparent pixels")
@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = core.Settings(
         mode=a.mode, palette=a.palette, colors=a.colors, dither=a.dither, dither_strength=a.dither_strength,
-        sharpen=not a.no_sharpen, despeckle=a.despeckle, contrast=not a.no_contrast, threshold=a.threshold,
+        sharpen=a.sharpen, despeckle=a.despeckle, contrast=a.contrast, threshold=a.threshold,
         matte=a.matte, grid_width=a.grid, min_output_width=a.min_output_width, fmt=a.format,
     )
     settings.validate()

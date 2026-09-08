@@ -84,7 +84,7 @@ def test_run_dir_is_created_next_to_the_source(tmp_path):
     assert first == photos / "red-sun-run-001" and second == photos / "red-sun-run-002"
     assert first.is_dir() and second.is_dir()
     # a recursive scan of the photos folder must not pick up outputs from earlier runs
-    Image.new("RGB", (8, 8)).save(first / "a_redsun_16c.png")
+    Image.new("RGB", (8, 8)).save(first / "a_redsun_flat16.png")
     assert [p.name for p in core.collect_files(photos, recursive=True)] == ["a.png"]
 
 

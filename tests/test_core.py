@@ -149,11 +149,11 @@ def test_batch_numbered_runs_and_naming(tmp_path: Path):
     assert seen == [(1, 4), (2, 4), (3, 4), (4, 4)]
     ok = [r for r in results if not r.error]
     assert len(ok) == 3 and results[2].error
-    assert {p.name for p in ok[0].outputs} == {"a_redsun_16c.png", "a_redsun_16c.bmp", "a_redsun_16c.gif"}
+    assert {p.name for p in ok[0].outputs} == {"a_redsun_flat16.png", "a_redsun_flat16.bmp", "a_redsun_flat16.gif"}
     assert {p.name for p in ok[1].outputs} == {"b_redsun_bw.png", "b_redsun_bw.bmp", "b_redsun_bw.gif"}
-    assert {p.name for p in ok[2].outputs} == {"a_redsun_16c-2.png", "a_redsun_16c-2.bmp", "a_redsun_16c-2.gif"}
+    assert {p.name for p in ok[2].outputs} == {"a_redsun_flat16-2.png", "a_redsun_flat16-2.bmp", "a_redsun_flat16-2.gif"}
     assert (out / "settings.json").exists()
-    with Image.open(out / "a_redsun_16c.bmp") as bmp:
+    with Image.open(out / "a_redsun_flat16.bmp") as bmp:
         assert bmp.mode == "P" and bmp.size == (900, 600)
     with Image.open(out / "b_redsun_bw.png") as png:
         assert png.mode == "1"
@@ -169,5 +169,87 @@ def test_settings_validation():
     with pytest.raises(ValueError):
         core.Settings(grid_width=5).validate()
     core.Settings().validate()
-    assert core.Settings().tag("color") == "16c"
+    assert core.Settings().tag("color") == "flat16"
+    assert core.Settings(palette="adaptive").tag("color") == "16c"
     assert core.Settings(palette="paint", dither="pattern").tag("color") == "paint28-pattern"
+
+
+def comic(width=800, height=600) -> Image.Image:
+    """Flat-colour art with anti-aliased edges, like an exported comic: paper, ink, two fills, one tiny fill."""
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", (width, height), (252, 246, 232))            # cream paper
+    d = ImageDraw.Draw(img)
+    d.rectangle((40, 40, 360, 300), fill=(253, 228, 155))               # yellow panel
+    d.ellipse((420, 80, 760, 420), fill=(179, 196, 181))                # sage blob
+    d.rectangle((600, 500, 640, 540), fill=(186, 86, 72))               # tiny red detail (0.3%)
+    d.ellipse((100, 380, 300, 560), outline=(0, 0, 0), width=14)        # ink
+    for x in range(60, 740, 60):
+        d.line((x, 30, x + 25, 570), fill=(0, 0, 0), width=9)           # ink strokes
+    px = img.load()
+    for y in range(0, height, 7):                                       # a few near-identical paper shades, like a scan
+        for x in range(0, width, 5):
+            if px[x, y] == (252, 246, 232):
+                px[x, y] = (253, 247, 233)
+    return img.filter(ImageFilter.GaussianBlur(0.9))                    # anti-aliasing / softness everywhere
+
+
+def test_flat_art_snaps_to_its_own_colours_with_no_edge_blends():
+    src = comic()
+    done = core.process(src, core.Settings(mode="color", min_output_width=0))   # defaults: dominant buckets
+    got = rgb_colors(done.image)
+    wanted = {(252, 246, 232), (253, 228, 155), (179, 196, 181), (186, 86, 72), (0, 0, 0)}
+    close = lambda a, b: sum((x - y) ** 2 for x, y in zip(a, b)) <= 4 ** 2  # noqa: E731
+    assert len(got) == 5 and all(any(close(g, w) for g in got) for w in wanted), got
+    # edge pixels around ink are ink or paper, never a gray blend
+    assert not any(abs(r - g) < 12 and abs(g - b) < 12 and 30 < r < 225 for r, g, b in got)
+    # the cream paper's near-identical shades merged into one bucket; tiny-but-real red detail kept
+    assert done.colors == 5
+
+
+def test_dominant_palette_cap_and_photo_posterization():
+    three = core.dominant_palette(comic(), 3)
+    assert len(three) == 3 and three[0] == (0, 0, 0) and (252, 246, 232) in three  # cap honoured; forced black, then most common
+    pal = core.dominant_palette(photo(400, 300), 16)
+    assert 2 <= len(pal) <= 16
+    assert all(all(0 <= v <= 255 for v in c) for c in pal)
+    assert core.dominant_palette(Image.new("RGB", (50, 50), (3, 2, 4)), 16) == [(0, 0, 0)]   # near-black snaps pure
+
+
+def test_hairline_ink_keeps_its_bucket():
+    """A one-pixel black stroke has no flat interior; it must still vote (ridge) and never be lost."""
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", (300, 300), (252, 246, 232))
+    d = ImageDraw.Draw(img)
+    for y in range(20, 280, 25):
+        d.line((10, y, 290, y + 7), fill=(0, 0, 0), width=1)
+    done = core.process(img, core.Settings(mode="color", min_output_width=0))
+    assert (0, 0, 0) in rgb_colors(done.image) and done.colors == 2
+    mask = core.vote_mask(img)
+    assert mask.getpixel((150, 20 + 3)) in (0, 255)                       # sanity: mask is binary
+    blend = Image.new("RGB", (60, 20), (0, 0, 0))
+    for x in range(30, 60):
+        for y in range(20):
+            blend.putpixel((x, y), (252, 246, 232))
+    soft = blend.filter(ImageFilter.GaussianBlur(1.5))
+    votes = core.vote_mask(soft)
+    assert all(votes.getpixel((x, 10)) == 0 for x in range(27, 33))         # the ramp itself never votes
+
+
+def test_edge_pixels_snap_to_a_neighbouring_bucket_not_a_far_mid_tone():
+    """Ink/paper blends must become ink or paper, never the brown that lives elsewhere in the picture."""
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", (400, 300), (252, 246, 232))
+    d = ImageDraw.Draw(img)
+    d.rectangle((300, 200, 390, 290), fill=(126, 112, 96))               # a brown block far from the ink
+    for y in range(30, 180, 20):
+        d.line((20, y, 260, y + 5), fill=(0, 0, 0), width=5)
+    soft = img.filter(ImageFilter.GaussianBlur(1.2))                     # soft ink edges: blends near (126,123,116)
+    done = core.process(soft, core.Settings(mode="color", min_output_width=0))
+    out = done.image.convert("RGB")
+    assert rgb_colors(out) == {(252, 246, 232), (0, 0, 0), (126, 112, 96)}
+    px = out.load()
+    fringe = sum(1 for y in range(20, 195) for x in range(10, 280) if px[x, y] == (126, 112, 96))
+    assert fringe == 0, fringe                                           # no brown anywhere near the strokes
