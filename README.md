@@ -4,15 +4,21 @@
 
 Turn any photo into a sharp, color-indexed **MS Paint style bitmap**. Big enough to print as a poster, clean enough to post.
 
-- **Hard pixels, no smoothing.** The image is reduced to a pixel grid, snapped to a palette, then scaled up by a whole number with nearest-neighbour. Every block is one flat colour. No gaussian blur, no anti-aliasing, no in-between shades.
-- **Real palettes.** Classic MS Paint 28 colours, Windows 16 colours, or an adaptive best-N palette. Black & white with automatic (Otsu) thresholding for scans and line art.
-- **Poster sized.** Default output is 3200 px wide (a 640-pixel grid at 5×). Set 6400 or 12800 for print; the file stays a tiny indexed PNG or BMP.
-- **Batch.** Point it at a folder (optionally with subfolders); one bad file never stops the rest. Outputs land in a `red_sun` folder next to the originals. Originals are never touched.
-- **A browser GUI that looks like 1999 on purpose.** Plain HTML forms, zero JavaScript, native file/folder picker. Also a CLI with the same options.
+Red Sun does what Photoshop's *Image → Mode → Indexed Color* and *Bitmap (50% threshold)* do, in batch, with a browser GUI: every pixel of the image is forced into a small exact palette (or pure black and white) **at native resolution**. There are no intermediate anti-aliased values, so edges stay one pixel hard no matter how far you zoom. Nothing is ever resampled; the only enlargement is a whole-number nearest-neighbour multiply.
 
-| Before | After (MS Paint 28, 640 grid, 5×) |
+- **Exact palettes.** Adaptive best-N (default 16), classic MS Paint 28, Windows 16, or web-safe 216 (Netscape). Black & white with automatic (Otsu) or fixed 50% threshold.
+- **Classic dithering, or none.** Diffusion (Floyd–Steinberg), ordered 8×8 pattern, or noise, with a strength knob. Off by default for flat, rigid regions.
+- **Sharpen before the snap.** An unsharp mask ahead of quantization shortens soft edges into single hard steps.
+- **Poster sized.** Sources smaller than your minimum width (default 3200 px) are multiplied up by a whole number. Larger sources keep every pixel. The files stay small because they are indexed.
+- **Numbered runs.** Every batch lands in a new `red-sun-run-001`, `-002`, … folder under `~/Pictures/Red Sun` with a `settings.json` beside the outputs, unless you choose another folder.
+- **Batch.** Pick files or a whole folder in the browser, or type a path for big folders. One bad file never stops the rest. Originals are never modified.
+- **A GUI that looks like 1999 on purpose.** Plain HTML forms, zero JavaScript, no native dialogs. Also a CLI with the same options.
+
+| Source (1:1 crop) | Red Sun, adaptive 12 colours, no dither (same 1:1 crop) |
 |---|---|
-| ![source photo](docs/sample-before.jpg) | ![Red Sun output](docs/sample-after.png) |
+| ![source photo detail](docs/sample-before.jpg) | ![Red Sun output detail](docs/sample-after.png) |
+
+> **Viewing tip.** Most image viewers (macOS Preview, browsers showing a bare image) smooth pixels when you zoom in. The file is exact regardless; use the **View every pixel** page in Red Sun, or Photoshop / GIMP, to see the hard boundaries. Every result also reports its colour count.
 
 ## Run it
 
@@ -30,7 +36,7 @@ Download the release ZIP, extract it completely, and double-click the launcher f
 
 The first launch opens a setup page in your browser, downloads a private Python runtime and the one locked dependency (Pillow) into your application-data folder, then opens the Red Sun page. Later launches are instant and offline. Keep the launcher next to the `app` folder.
 
-**Release status.** The ZIP built and tested so far on this project covers **macOS** (launch verified) and **Windows x64 / ARM64** (built, not yet run on a Windows machine). Linux AppImages need a Linux build host and are not in the current ZIP. Unsigned launchers can trigger macOS Gatekeeper ("unidentified developer": right-click → Open) or Windows SmartScreen ("More info → Run anyway").
+**Release status.** The ZIP built and tested so far covers **macOS** (launch verified) and **Windows x64 / ARM64** (built, not yet run on a Windows machine). Linux AppImages need a Linux build host and are not in the current ZIP. Unsigned launchers can trigger macOS Gatekeeper ("unidentified developer": right-click → Open) or Windows SmartScreen ("More info → Run anyway").
 
 ### Option B: from this repository
 
@@ -49,13 +55,16 @@ Your browser opens at `http://127.0.0.1:<port>`. Quit from the page footer or wi
 ### Option C: command line
 
 ```bash
-PYTHONPATH=app/src uv run --project app python -m red_sun ./scans --palette paint --width 640 --output-width 3200
+PYTHONPATH=app/src uv run --project app python -m red_sun ./scans --colors 12
+PYTHONPATH=app/src uv run --project app python -m red_sun comic.tif --mode bw --threshold 128 --dither pattern --dither-strength 100
 ```
 
 ```
-python -m red_sun <file-or-folder> [--mode auto|color|bw] [--palette paint|win16|adaptive] [--colors N]
-                  [--dither] [--no-despeckle] [--no-contrast] [--threshold 0-255]
-                  [--width GRID] [--output-width PX] [--format png|bmp|both] [--recursive] [--out DIR]
+python -m red_sun <file-or-folder>
+    [--mode auto|color|bw] [--palette adaptive|paint|win16|websafe] [--colors N]
+    [--dither none|diffusion|pattern|noise] [--dither-strength 0-100]
+    [--no-sharpen] [--no-contrast] [--despeckle] [--threshold 0-255] [--matte white|gray|black]
+    [--grid WIDTH] [--min-output-width PX] [--format png|bmp|gif|all] [--recursive] [--out DIR]
 ```
 
 ## The knobs
@@ -63,22 +72,25 @@ python -m red_sun <file-or-folder> [--mode auto|color|bw] [--palette paint|win16
 | Setting | Default | What it does |
 |---|---|---|
 | Mode | Auto | Auto picks black & white for grayscale sources, colour otherwise. |
-| Palette | MS Paint classic (28) | Fixed palettes give the authentic look. Adaptive picks the best N colours from the image. |
-| Dither | off | Floyd–Steinberg speckle shading. Off keeps regions flat and hard. |
-| Despeckle | on | 5×5 median before quantizing and a 3×3 mode filter after. Removes grain and stray pixels without softening an edge. |
-| Contrast boost | on | Black & white: autocontrast stretch. Colour: a fixed, hue-safe 1.3× boost (a mostly-white logo keeps its red). |
-| Threshold | automatic | Manual black & white cut, 0–255. |
-| Pixel grid width | 640 | How many "Paint pixels" across. 320 is chunky, 1024 is fine. |
-| Output width | 3200 | Rounded to a whole multiple of the grid so blocks stay exact. 640 → 3200 is 5×. |
-| Format | PNG | Indexed PNG, indexed BMP, or both. |
+| Palette | Adaptive, N = 16 | Best N colours from the image (Photoshop-style: 9–16 works well). Fixed palettes give the authentic Paint / Windows / Netscape look. |
+| Dither | None | *Diffusion* = Floyd–Steinberg; *Pattern* = ordered 8×8 Bayer; *Noise* = random. None keeps regions flat. |
+| Dither strength | 60 % | Amplitude of the pattern or noise field. 100 % is the full classic halftone in black & white. |
+| Sharpen | on | Unsharp mask before the palette snap. Turns soft edges into single hard steps; on very strong edges it can draw a one-pixel outline in a neighbouring palette colour. Turn off for the plainest snap. |
+| Contrast boost | on | Black & white: autocontrast stretch. Colour: a fixed, hue-safe 1.3× (a mostly-white logo keeps its red). |
+| Despeckle | off | 3×3 median first. Kills film grain and JPEG noise at the cost of the finest detail. |
+| Threshold | automatic | Black & white cut, 0–255. Blank = Otsu. 128 = Photoshop's 50%. |
+| Matte | White | Colour that transparent pixels are flattened onto. Netscape gray (#CCCCCC) and black available. |
+| Pixel grid width | native | Blank keeps every source pixel. A number downsamples once (Lanczos) to a chunky grid before the snap. |
+| Minimum output width | 3200 | Results narrower than this are multiplied by a whole number with nearest neighbour. 0 = never. |
+| Format | PNG | Indexed PNG, indexed BMP, GIF, or all three. |
 
-Output names: `<name>_redsun_paint28.png`, `<name>_redsun_win16.png`, `<name>_redsun_16c.png`, `<name>_redsun_bw.png` (plus `_dither`).
+Output names: `<name>_redsun_16c.png`, `<name>_redsun_paint28.png`, `<name>_redsun_web216-pattern.png`, `<name>_redsun_bw-diffusion.png`, and so on. Duplicate names inside one batch get `-2`, `-3`.
 
 ## Develop
 
 ```bash
-uv run --project app --group dev pytest        # unit tests (tests/test_core.py)
-uv run --project app python tests/smoke.py     # real HTTP end-to-end smoke
+uv run --project app --group dev pytest        # unit tests (tests/test_core.py, tests/test_server.py)
+uv run --project app python tests/smoke.py     # real HTTP end-to-end smoke, including multipart uploads
 python3 packaging/build_release.py             # icons, uv tools, launcher images, ZIP (see below)
 ```
 

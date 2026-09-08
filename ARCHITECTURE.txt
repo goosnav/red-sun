@@ -13,48 +13,56 @@ One shared core, two thin surfaces, one launcher contract.
         binds 127.0.0.1 (OS-chosen port), publishes the URL, serves forever
         v
     red_sun.server  (stdlib http.server, plain HTML forms, no JS) -- app/src/red_sun/server.py
-        GET  /                 the form
-        POST /jobs             validate -> start a batch thread -> 303 /jobs/<id>
-        GET  /jobs/<id>        progress (<meta refresh> + <progress>) or results with previews
-        GET  /jobs/<id>/out/n  one output file (or ?preview=1: grid-resolution PNG)
-        POST /browse/{file,folder}   native picker via a tkinter subprocess (red_sun/pick.py)
-        POST /jobs/<id>/reveal open the output folder in Finder/Explorer/xdg-open
-        POST /quit             clean shutdown
-        GET  /health/ready     readiness for the launcher
+        GET  /                    the form
+        POST /jobs                multipart: browser file/folder uploads streamed to a temp dir,
+                                  plus an optional typed path -> batch thread -> 303 /jobs/<id>
+        GET  /jobs/<id>           progress (<meta refresh> + <progress>) or results
+        GET  /jobs/<id>/out/n     one output file; ?crop=1 = unscaled 1:1 centre crop
+        GET  /jobs/<id>/view/n    the file at natural size with nearest-neighbour rendering
+        POST /jobs/<id>/reveal    open the run folder in Finder/Explorer/xdg-open (the only non-GUI action)
+        POST /quit                clean shutdown
+        GET  /health/ready        readiness for the launcher
         v
     red_sun.core  (pure Pillow, no I/O framework) ----------------- app/src/red_sun/core.py
-        Settings  -> process(image) -> Processed(image, mode, colors)
-        collect_files / run_batch(files, out_dir, settings, progress)
+        Settings -> process(image) -> Processed(image, mode, colors, factor)
+        collect_files / next_run_dir / run_batch(files, out_dir, settings, progress)
         ^
     red_sun.__main__  CLI: python -m red_sun <file-or-folder> [...] -- same core, same options
 
-PIPELINE (core.process)
+PIPELINE (core.process) — the Photoshop "Indexed Color / Bitmap" recipe, at native resolution
 -----------------------
-    1. flatten: EXIF rotate, composite transparency onto white, RGB
-    2. resize_down to the pixel grid width (LANCZOS; the only resampling in the whole pipeline)
-    3. despeckle (default on): 5x5 median  — edge-preserving, removes grain before it can become speckle
-    4. color:  optional fixed contrast boost (1.3x, hue-safe) -> quantize to a fixed palette
-               (MS Paint 28 / Windows 16) or adaptive median-cut N colors, dither OFF by default
-       bw:     optional autocontrast -> Otsu (or manual) threshold -> 1-bit
-    5. despeckle: 3x3 mode filter on the indexed image (most common neighbour; never blends colors)
-    6. integer_upscale: NEAREST by round(output_width / grid_width)  -> every block is one flat color
-    7. save indexed PNG ("P" or "1" mode) and/or indexed BMP
+    1. flatten: EXIF rotate, composite transparency onto the matte, RGB
+    2. optional pixel grid: ONE Lanczos downscale, only when a grid width is given (default: none)
+    3. optional despeckle: 3x3 median (default off)
+    4. optional sharpen: unsharp mask r=1, 150%, threshold 2 (default on) — shortens soft edges before the snap
+    5. color:  optional fixed 1.3x contrast (hue-safe)
+               palette = adaptive median-cut N (computed without dither) | MS Paint 28 | Windows 16 | web-safe 216
+               dither  = none | diffusion (Floyd–Steinberg) | pattern (8x8 Bayer field added, then plain snap)
+                         | noise (Gaussian field added, then plain snap)
+               -> quantize to the exact palette (mode P)
+       bw:     optional autocontrast -> threshold (Otsu | manual; 128 = Photoshop 50%) with the same dither choices
+               -> mode 1
+    6. integer_upscale: NEAREST by ceil(min_output_width / width), never less than 1 -> every block one flat colour
+    7. save indexed PNG / BMP / GIF
 
-    Output size is grid x factor, so 640 grid + 3200 target = exactly 5x5 blocks.
+    Invariant: after step 2 nothing is resampled. Every output pixel is one exact palette colour and every
+    edge is a single-pixel step (or a dither texture made of exact colours). Output size is source size x factor.
 
 SECURITY MODEL (local app)
 --------------------------
     - Server binds 127.0.0.1 only; port chosen by the OS (or GOOSNAV_PORT_PREFERENCE / RED_SUN_PORT).
     - Every POST needs the per-launch session token (hidden form field) AND a same-origin check
       (Sec-Fetch-Site, else Origin/Referer vs Host). A web page in another tab cannot drive the app.
-    - The server never serves a user-supplied path. Outputs are served by job id + index only.
-    - Subprocesses (picker, reveal) get explicit argv; nothing is ever passed through a shell.
-    - Form bodies are capped at 64 KB. All rendered text is HTML-escaped.
+    - Uploads are streamed by a small hand-written multipart parser (boundary validated by the following
+      CRLF/--, text fields capped at 64 KB, file names reduced to their base name) into a temp dir that is
+      deleted when the job ends. The server never serves a user-supplied path; outputs are served by job id + index.
+    - Subprocess (reveal) gets explicit argv; nothing is ever passed through a shell. All rendered text is HTML-escaped.
     - No secrets, no network calls, no telemetry. Source images are never modified.
 
 DATA LOCATIONS
 --------------
-    Outputs:          <source folder>/red_sun/  (or the folder typed in the form / --out)
+    Outputs:          ~/Pictures/Red Sun/red-sun-run-NNN/ (+ settings.json), or the folder typed in the form / --out
+    Uploads:          system temp dir, red-sun-upload-*, removed after the batch
     Launcher runtime: macOS ~/Library/Application Support/Red Sun, Windows %LOCALAPPDATA%\Red Sun,
                       Linux ~/.local/share/Red Sun  (python/, runtimes/, cache/, logs/, runtime/)
     Source checkout:  no writes except an optional .venv/ created by run.sh without uv.
@@ -63,25 +71,25 @@ REPOSITORY MAP
 --------------
     app/                    the M1a payload; launchers only ever touch this directory
       pyproject.toml        Pillow pinned, no-build, six required OS/arch environments; uv.lock committed
-      src/red_sun/          core.py, server.py, start.py, pick.py, __main__.py
-      static/               style.css (class-free baseline), icon.png, favicon.ico
+      src/red_sun/          core.py, server.py, start.py, __main__.py
+      static/               style.css (element selectors only: Helvetica bold caps titles, Times body), icon.png, favicon.ico
       launcher/             manifest.json, bootstrap.py, checksums.sha256, tools/<os-arch>/uv (downloaded)
     packaging/              build-host only, never shipped inside app/
       launcher/             vendored Goosnav M1a supervisor (Go) + build/fetch/package scripts
       make_icon.py          pixel-art sun -> AppIcon.png/.ico/.icns + app/static icons
       build_release.py      icons -> uv tools -> go test -> images this host can build -> ZIP
       release/README.txt    the customer-facing readme placed at the ZIP root
-    tests/                  test_core.py (pytest), smoke.py (real HTTP end-to-end)
+    tests/                  test_core.py, test_server.py (pytest), smoke.py (real HTTP end-to-end)
     run.sh / run.command / run.ps1   source-checkout launchers (uv, or python3 + venv)
 
 WHY THESE CHOICES
 -----------------
-    stdlib http.server, not FastAPI:  one dependency (Pillow) means the lock resolves for all six
-        targets with prebuilt wheels and first launch downloads ~5 MB, not 50. Swap server.py for a
-        framework if an API surface is ever needed; core.py does not change.
-    zero JavaScript:  every action is a form POST; progress is <meta refresh>. Works with CSS off,
-        with a screen reader, and looks like 1999 on purpose.
-    native picker via tkinter subprocess:  gives a real filesystem path, so batch output lands next
-        to the source; the text field is the always-available fallback.
-    integer upscale only:  a "poster" is the same indexed image at 5x or 10x; no resampling, no
-        smoothing, no new colors.
+    native resolution, not a pixel grid:  downsampling first turns every edge into a ramp of intermediate palette
+        colours; snapping every source pixel keeps edges one pixel wide, exactly like Photoshop's Indexed Color.
+        The grid remains an explicit option for the chunky retro look.
+    stdlib http.server, not FastAPI:  one dependency (Pillow) means the lock resolves for all six targets with
+        prebuilt wheels and first launch downloads ~20 MB. Swap server.py for a framework if an API is ever needed.
+    zero JavaScript, no native dialogs:  every action is a form POST; file and folder selection are the browser's
+        own <input type=file> (with webkitdirectory). Works with CSS and JS off, and never pops a window of its own.
+    numbered run folders:  each batch is reproducible from its settings.json and never overwrites a previous run.
+    integer upscale only:  a "poster" is the same indexed image at 2x or 5x; no resampling, no new colours.

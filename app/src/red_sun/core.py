@@ -1,17 +1,20 @@
 """Red Sun image pipeline: sharp, color-indexed, MS Paint style bitmaps.
 
-Every output pixel is one flat palette colour. The only resampling that ever
-happens is the initial downscale to the pixel grid; everything after that is
-palette lookup and integer nearest-neighbour upscale, so edges stay hard.
+The image is processed at its native resolution: every source pixel is forced into a
+small exact palette (or pure black/white), the way Photoshop's Indexed Color and
+Bitmap modes work. Nothing is resampled unless a pixel grid is requested, and the
+only upscale is an integer nearest-neighbour multiply. Edges stay one pixel hard.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+import re
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
 SUPPORTED = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".gif"}
 
@@ -23,50 +26,61 @@ PAINT_28 = [
     (255, 0, 255), (255, 255, 128), (0, 255, 128), (128, 255, 255), (128, 128, 255), (255, 0, 128), (255, 128, 64),
 ]
 WIN_16 = PAINT_28[:8] + PAINT_28[14:22]
-PALETTES = {"paint": PAINT_28, "win16": WIN_16}
+WEB_216 = [(r, g, b) for r in range(0, 256, 51) for g in range(0, 256, 51) for b in range(0, 256, 51)]
+PALETTES = {"paint": PAINT_28, "win16": WIN_16, "websafe": WEB_216}
+MATTES = {"white": (255, 255, 255), "gray": (204, 204, 204), "black": (0, 0, 0)}  # gray = Netscape gray
 
 MODES = ("auto", "color", "bw")
-PALETTE_CHOICES = ("paint", "win16", "adaptive")
-FORMATS = ("png", "bmp", "both")
+PALETTE_CHOICES = ("adaptive", "paint", "win16", "websafe")
+DITHERS = ("none", "diffusion", "pattern", "noise")
+FORMATS = ("png", "bmp", "gif", "all")
+EXTENSIONS = {"png": [".png"], "bmp": [".bmp"], "gif": [".gif"], "all": [".png", ".bmp", ".gif"]}
+
+BAYER_8 = [
+    [0, 32, 8, 40, 2, 34, 10, 42], [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38], [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41], [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37], [63, 31, 55, 23, 61, 29, 53, 21],
+]
+RUN_RE = re.compile(r"red-sun-run-(\d+)$")
 
 
 @dataclass
 class Settings:
-    mode: str = "auto"          # auto | color | bw
-    palette: str = "paint"      # paint | win16 | adaptive
-    colors: int = 16            # adaptive palette size
-    dither: bool = False        # Floyd-Steinberg; off = hard flat regions
-    despeckle: bool = True      # 5x5 median before quantizing + 3x3 mode filter after (skipped when dithering)
-    contrast: bool = True       # B&W: autocontrast stretch; color: fixed hue-safe boost
-    threshold: int | None = None  # B&W cut 0-255; None = Otsu
-    grid_width: int = 640       # pixel grid (working) width
-    output_width: int = 3200    # target output width; rounded to an integer multiple of the grid
-    fmt: str = "png"            # png | bmp | both
+    mode: str = "auto"              # auto | color | bw
+    palette: str = "adaptive"       # adaptive | paint | win16 | websafe
+    colors: int = 16                # adaptive palette size
+    dither: str = "none"            # none | diffusion | pattern | noise
+    dither_strength: int = 60       # % amplitude for pattern/noise
+    sharpen: bool = True            # unsharp mask before the palette snap
+    despeckle: bool = False         # 3x3 median before everything else
+    contrast: bool = True           # B&W: autocontrast stretch; color: fixed hue-safe boost
+    threshold: int | None = None    # B&W cut 0-255; None = Otsu; 128 = Photoshop's 50%
+    matte: str = "white"            # background for transparent pixels: white | gray | black
+    grid_width: int | None = None   # optional downscale to a chunky pixel grid; None = native
+    min_output_width: int = 3200    # integer nearest-neighbour upscale until at least this wide
+    fmt: str = "png"                # png | bmp | gif | all
 
     def validate(self) -> None:
-        if self.mode not in MODES:
-            raise ValueError(f"mode must be one of {MODES}")
-        if self.palette not in PALETTE_CHOICES:
-            raise ValueError(f"palette must be one of {PALETTE_CHOICES}")
-        if self.fmt not in FORMATS:
-            raise ValueError(f"format must be one of {FORMATS}")
-        if not 2 <= self.colors <= 256:
-            raise ValueError("colors must be 2-256")
-        if not 16 <= self.grid_width <= 4096:
-            raise ValueError("pixel grid width must be 16-4096")
-        if not 16 <= self.output_width <= 16384:
-            raise ValueError("output width must be 16-16384")
-        if self.threshold is not None and not 0 <= self.threshold <= 255:
-            raise ValueError("threshold must be 0-255")
-
-    def factor(self) -> int:
-        return max(1, round(self.output_width / self.grid_width))
+        checks = [
+            (self.mode in MODES, f"mode must be one of {MODES}"),
+            (self.palette in PALETTE_CHOICES, f"palette must be one of {PALETTE_CHOICES}"),
+            (self.dither in DITHERS, f"dither must be one of {DITHERS}"),
+            (self.fmt in FORMATS, f"format must be one of {FORMATS}"),
+            (self.matte in MATTES, f"matte must be one of {tuple(MATTES)}"),
+            (2 <= self.colors <= 256, "colors must be 2-256"),
+            (0 <= self.dither_strength <= 100, "dither strength must be 0-100"),
+            (self.grid_width is None or 16 <= self.grid_width <= 16384, "pixel grid width must be 16-16384"),
+            (0 <= self.min_output_width <= 32768, "minimum output width must be 0-32768"),
+            (self.threshold is None or 0 <= self.threshold <= 255, "threshold must be 0-255"),
+        ]
+        for ok, message in checks:
+            if not ok:
+                raise ValueError(message)
 
     def tag(self, mode: str) -> str:
-        if mode == "bw":
-            return "bw"
-        name = {"paint": "paint28", "win16": "win16"}.get(self.palette, f"{self.colors}c")
-        return name + ("_dither" if self.dither else "")
+        name = "bw" if mode == "bw" else {"paint": "paint28", "win16": "win16", "websafe": "web216"}.get(self.palette, f"{self.colors}c")
+        return name if self.dither == "none" else f"{name}-{self.dither}"
 
 
 @dataclass
@@ -74,6 +88,7 @@ class Processed:
     image: Image.Image
     mode: str      # color | bw actually used
     colors: int    # distinct colours in the result
+    factor: int    # nearest-neighbour upscale applied
 
 
 @dataclass
@@ -84,8 +99,11 @@ class Result:
     height: int = 0
     colors: int = 0
     mode: str = ""
+    factor: int = 1
     error: str | None = None
 
+
+# ---------------------------------------------------------------- helpers
 
 def otsu_threshold(gray: Image.Image) -> int:
     hist = gray.histogram()
@@ -111,18 +129,18 @@ def otsu_threshold(gray: Image.Image) -> int:
     return threshold
 
 
-def flatten(img: Image.Image) -> Image.Image:
-    """Honour EXIF rotation and composite transparency onto white, like Paint's canvas."""
+def flatten(img: Image.Image, matte: tuple[int, int, int]) -> Image.Image:
+    """Honour EXIF rotation and composite transparency onto the matte colour."""
     img = ImageOps.exif_transpose(img)
     if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
         rgba = img.convert("RGBA")
-        return Image.alpha_composite(Image.new("RGBA", rgba.size, "white"), rgba).convert("RGB")
+        return Image.alpha_composite(Image.new("RGBA", rgba.size, matte), rgba).convert("RGB")
     return img.convert("RGB")
 
 
 def resize_down(img: Image.Image, width: int) -> Image.Image:
     if img.width <= width:
-        return img.copy()
+        return img
     return img.resize((width, round(img.height * width / img.width)), Image.Resampling.LANCZOS)
 
 
@@ -149,38 +167,94 @@ def palette_image(colors: list[tuple[int, int, int]]) -> Image.Image:
     return pal
 
 
+def used_colors(p_img: Image.Image) -> list[tuple[int, int, int]]:
+    pal = p_img.getpalette()
+    return [tuple(pal[3 * i:3 * i + 3]) for _, i in sorted(p_img.getcolors(256), key=lambda c: c[1])]
+
+
+def count_colors(img: Image.Image) -> int:
+    return len(img.convert("RGB").getcolors(maxcolors=1 << 20) or [])
+
+
+def bayer(size: tuple[int, int], spread: float) -> Image.Image:
+    """8x8 ordered-dither threshold pattern, centred on 128, built with bytes ops (fast at any size)."""
+    w, h = size
+    rows = []
+    for row in BAYER_8:
+        vals = bytes(int(round(128 + ((v + 0.5) / 64 - 0.5) * spread)) for v in row)
+        rows.append((vals * (w // 8 + 1))[:w])
+    data = (b"".join(rows) * (h // 8 + 1))[: w * h]
+    return Image.frombytes("L", (w, h), data)
+
+
+def dither_offset(size: tuple[int, int], s: Settings) -> Image.Image | None:
+    spread = 255 * s.dither_strength / 100
+    if s.dither == "pattern":
+        return bayer(size, spread)
+    if s.dither == "noise":
+        return Image.effect_noise(size, spread / 4)
+    return None
+
+
+def add_offset(img: Image.Image, offset: Image.Image) -> Image.Image:
+    """img + (offset - 128), clipped. Ordered/noise dithering = add a threshold field, then snap without diffusion."""
+    if img.mode == "RGB":
+        offset = Image.merge("RGB", (offset, offset, offset))
+    return ImageChops.add(img, offset, 1.0, -128)
+
+
+# ---------------------------------------------------------------- pipeline
+
+def prepare(img: Image.Image, s: Settings) -> Image.Image:
+    rgb = flatten(img, MATTES[s.matte])
+    if s.grid_width:
+        rgb = resize_down(rgb, s.grid_width)  # the ONLY resampling, and only on request
+    if s.despeckle:
+        rgb = rgb.filter(ImageFilter.MedianFilter(3))
+    if s.sharpen:
+        rgb = rgb.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=2))
+    return rgb
+
+
+def quantize_color(rgb: Image.Image, s: Settings) -> Image.Image:
+    if s.contrast:
+        rgb = ImageEnhance.Contrast(rgb).enhance(1.3)  # fixed and hue-safe: a mostly-white logo keeps its red
+    if s.palette == "adaptive":
+        base = rgb.quantize(colors=s.colors, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+        colors = used_colors(base)
+    else:
+        colors = PALETTES[s.palette]
+    offset = dither_offset(rgb.size, s)
+    if offset is not None:
+        rgb = add_offset(rgb, offset)
+    diffusion = Image.Dither.FLOYDSTEINBERG if s.dither == "diffusion" else Image.Dither.NONE
+    return rgb.quantize(palette=palette_image(colors), dither=diffusion)
+
+
+def quantize_bw(rgb: Image.Image, s: Settings) -> Image.Image:
+    gray = rgb.convert("L")
+    if s.contrast:
+        gray = ImageOps.autocontrast(gray, cutoff=0.2)
+    t = otsu_threshold(gray) if s.threshold is None else s.threshold
+    offset = dither_offset(gray.size, s)
+    if offset is not None:
+        gray = add_offset(gray, offset)
+    if s.dither == "diffusion":
+        shifted = gray.point(lambda p: min(255, max(0, p + 128 - t)))  # Pillow diffuses around 128
+        return shifted.convert("1", dither=Image.Dither.FLOYDSTEINBERG)
+    return gray.point(lambda p: 255 if p > t else 0, mode="1")
+
+
 def process(img: Image.Image, s: Settings) -> Processed:
     s.validate()
     mode = auto_mode(img) if s.mode == "auto" else s.mode
-    small = resize_down(flatten(img), s.grid_width)
-    # Median (edge-preserving, never blurs) kills grain before it can become speckle;
-    # the mode filter afterwards removes what survives. Both skipped for dithering.
-    clean = s.despeckle and not s.dither
-    if clean:
-        small = small.filter(ImageFilter.MedianFilter(5))
-    if mode == "bw":
-        gray = small.convert("L")
-        if s.contrast:
-            gray = ImageOps.autocontrast(gray, cutoff=0.2)
-        t = otsu_threshold(gray) if s.threshold is None else s.threshold
-        out = gray.point(lambda p: 255 if p > t else 0, mode="L")
-        if clean:
-            out = out.filter(ImageFilter.ModeFilter(3))
-        out = out.point(lambda p: 255 if p > 127 else 0, mode="1")
-    else:
-        if s.contrast:
-            # a fixed boost, not a histogram stretch: a mostly-white logo must not turn its red into black
-            small = ImageEnhance.Contrast(small).enhance(1.3)
-        dither = Image.Dither.FLOYDSTEINBERG if s.dither else Image.Dither.NONE
-        if s.palette == "adaptive":
-            out = small.quantize(colors=s.colors, method=Image.Quantize.MEDIANCUT, dither=dither)
-        else:
-            out = small.quantize(palette=palette_image(PALETTES[s.palette]), dither=dither)
-        if clean:
-            out = out.filter(ImageFilter.ModeFilter(3))
-    colors = len(out.convert("RGB").getcolors(maxcolors=1 << 20) or [])
-    return Processed(integer_upscale(out, s.factor()), mode, colors)
+    rgb = prepare(img, s)
+    out = quantize_bw(rgb, s) if mode == "bw" else quantize_color(rgb, s)
+    factor = max(1, -(-s.min_output_width // out.width))  # ceil: never resample, only multiply
+    return Processed(integer_upscale(out, factor), mode, count_colors(out), factor)
 
+
+# ---------------------------------------------------------------- files and runs
 
 def collect_files(path: Path, recursive: bool = False) -> list[Path]:
     if path.is_file():
@@ -189,19 +263,26 @@ def collect_files(path: Path, recursive: bool = False) -> list[Path]:
     return sorted(p for p in walk if p.is_file() and p.suffix.lower() in SUPPORTED and not p.name.startswith("."))
 
 
-def default_out_dir(path: Path) -> Path:
-    return (path.parent if path.is_file() else path) / "red_sun"
+def exports_root() -> Path:
+    pictures = Path.home() / "Pictures"
+    return (pictures if pictures.is_dir() else Path.home()) / "Red Sun"
+
+
+def next_run_dir(root: Path | None = None) -> Path:
+    """red-sun-run-001, -002, ... under the exports root (not created here)."""
+    root = root or exports_root()
+    numbers = [int(m.group(1)) for p in root.glob("red-sun-run-*") if (m := RUN_RE.match(p.name))]
+    return root / f"red-sun-run-{max(numbers, default=0) + 1:03d}"
 
 
 def save(result: Image.Image, stem: Path, fmt: str) -> list[Path]:
     outputs = []
-    if fmt in ("png", "both"):
-        out = stem.with_suffix(".png")
-        result.save(out, "PNG", optimize=True)
-        outputs.append(out)
-    if fmt in ("bmp", "both"):
-        out = stem.with_suffix(".bmp")
-        result.save(out, "BMP")
+    for ext in EXTENSIONS[fmt]:
+        out = stem.with_suffix(ext)
+        if ext == ".gif" and result.mode == "1":
+            result.convert("L").convert("P", palette=Image.Palette.ADAPTIVE, colors=2).save(out, "GIF")
+        else:
+            result.save(out, {".png": "PNG", ".bmp": "BMP", ".gif": "GIF"}[ext], optimize=True)
         outputs.append(out)
     return outputs
 
@@ -212,20 +293,26 @@ def run_batch(
     s: Settings,
     progress: Callable[[int, int, Result], None] | None = None,
 ) -> list[Result]:
-    """Process every file; one bad file never stops the batch."""
+    """Process every file into out_dir; one bad file never stops the batch."""
     s.validate()
     out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "settings.json").write_text(json.dumps(asdict(s), indent=2), encoding="utf-8")
     results: list[Result] = []
+    used: set[str] = set()
     for index, src in enumerate(files, 1):
         result = Result(source=src)
         try:
             with Image.open(src) as original:
                 original.load()
                 done = process(original, s)
-            stem = out_dir / f"{src.stem}_redsun_{s.tag(done.mode)}"
-            result.outputs = save(done.image, stem, s.fmt)
+            base = stem = f"{src.stem}_redsun_{s.tag(done.mode)}"
+            k = 2
+            while stem in used:  # same file name from two folders in one batch
+                stem, k = f"{base}-{k}", k + 1
+            used.add(stem)
+            result.outputs = save(done.image, out_dir / stem, s.fmt)
             result.width, result.height = done.image.size
-            result.colors, result.mode = done.colors, done.mode
+            result.colors, result.mode, result.factor = done.colors, done.mode, done.factor
         except Exception as exc:  # noqa: BLE001 - report and continue
             result.error = f"{type(exc).__name__}: {exc}"
         results.append(result)
