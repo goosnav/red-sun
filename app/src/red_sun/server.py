@@ -3,9 +3,10 @@
 Every page is rendered here from the same core the CLI uses. State-changing
 requests need the per-launch session token (a hidden form field) and a
 same-origin check, so a malicious website cannot drive the app. Folders are
-chosen with an in-page folder browser (no native dialogs, no typing needed);
-the only thing that ever leaves the browser is "Show output folder".
-Settings persist to a small JSON file so the app reopens the way it was left.
+chosen with the operating system's own Choose Folder dialog (macOS panel via
+osascript, Windows via PowerShell, Linux via zenity/kdialog), so a real path
+comes back and results can be written beside the pictures. Settings persist to
+a small JSON file so the app reopens the way it was left.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import os
 import platform
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -24,7 +26,7 @@ import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from PIL import Image
 
@@ -35,8 +37,6 @@ STATIC_FILES = {"style.css": "text/css", "icon.png": "image/png", "favicon.ico":
 SESSION = secrets.token_urlsafe(24)
 MAX_FORM_BYTES = 65536
 CROP = (480, 320)
-LIST_LIMIT = 400
-BUNDLES = {".app", ".photoslibrary", ".lrlibrary", ".lrcat", ".bundle", ".framework", ".pkg"}  # macOS packages posing as folders
 
 e = html.escape
 
@@ -125,23 +125,14 @@ def clean_path(text: str) -> Path:
     return Path(text.strip().strip('"\'')).expanduser()
 
 
-# ---------------------------------------------------------------- folder browser model
+# ---------------------------------------------------------------- the system's own folder dialog
 
-def shortcuts() -> list[tuple[str, Path]]:
-    home = Path.home()
-    places = [("Home", home)] + [(n, home / n) for n in ("Desktop", "Pictures", "Documents", "Downloads")]
-    system = platform.system()
-    if system == "Darwin":
-        places += [(p.name, p) for p in sorted(Path("/Volumes").glob("*")) if p.is_dir()]
-    elif system == "Windows":
-        places += [(d.rstrip("\\"), Path(d)) for d in os.listdrives()] if hasattr(os, "listdrives") else []
-    else:
-        for base in (Path("/media") / os.environ.get("USER", ""), Path("/mnt")):
-            places += [(p.name, p) for p in sorted(base.glob("*")) if p.is_dir()]
-    return [(name, p) for name, p in places if p.is_dir()]
+DIALOG_TIMEOUT = 600  # seconds a dialog may stay open before it counts as cancelled
+IMAGE_EXTENSIONS = "*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.bmp;*.webp;*.gif"
 
 
 def start_dir(fields: dict[str, str]) -> Path:
+    """Where the dialog opens: the last folder, else Pictures, else home."""
     for key in ("path", "out_dir"):
         if fields.get(key, "").strip():
             candidate = core.source_folder(clean_path(fields[key]))
@@ -151,33 +142,56 @@ def start_dir(fields: dict[str, str]) -> Path:
     return pictures if pictures.is_dir() else Path.home()
 
 
-@dataclass
-class Listing:
-    folders: list[Path]
-    images: list[Path]
-    more: int
-    problem: str | None = None
+def dialog_command(kind: str, start: Path) -> list[str]:
+    """argv for the OS dialog. kind: 'source' (folder of pictures), 'file' (one image), 'out' (output folder)."""
+    prompt = {"source": "Choose the folder with your pictures", "file": "Choose one image", "out": "Choose where to save the results"}[kind]
+    system = platform.system()
+    if system == "Darwin":
+        quoted = str(start).replace("\\", "\\\\").replace('"', '\\"')
+        chooser = 'choose file of type {"public.image"}' if kind == "file" else "choose folder"
+        script = (
+            "activate\n"  # bring the panel in front of the browser
+            f'set chosen to {chooser} with prompt "{prompt}" default location (POSIX file "{quoted}" as alias)\n'
+            "return POSIX path of chosen"
+        )
+        return ["osascript", "-e", script]
+    if system == "Windows":
+        quoted = str(start).replace("'", "''")
+        if kind == "file":
+            dialog = (f"$d = New-Object System.Windows.Forms.OpenFileDialog; $d.Title = '{prompt}'; "
+                      f"$d.Filter = 'Images|{IMAGE_EXTENSIONS}|All files|*.*'; $d.InitialDirectory = '{quoted}'; "
+                      "if ($d.ShowDialog($owner) -eq 'OK') { $d.FileName } else { exit 1 }")
+        else:
+            dialog = (f"$d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = '{prompt}'; "
+                      f"$d.SelectedPath = '{quoted}'; $d.ShowNewFolderButton = $true; "
+                      "if ($d.ShowDialog($owner) -eq 'OK') { $d.SelectedPath } else { exit 1 }")
+        script = ("Add-Type -AssemblyName System.Windows.Forms; "
+                  "$owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; " + dialog)
+        return ["powershell", "-NoProfile", "-STA", "-Command", script]
+    if shutil.which("zenity"):
+        base = ["zenity", "--file-selection", f"--title={prompt}", f"--filename={start}/"]
+        return base if kind == "file" else base + ["--directory"]
+    if kind == "file":
+        return ["kdialog", "--getopenfilename", str(start), "image/*", "--title", prompt]
+    return ["kdialog", "--getexistingdirectory", str(start), "--title", prompt]
 
 
-def list_folder(directory: Path) -> Listing:
-    folders, images, more = [], [], 0
+def native_pick(kind: str, start: Path) -> tuple[str | None, str | None]:
+    """Show the OS dialog. Returns (path, None); ("", None) when cancelled; (None, problem) when unavailable."""
+    if not start.is_dir():
+        start = Path.home()
     try:
-        entries = sorted(directory.iterdir(), key=lambda p: p.name.lower())
-    except PermissionError:
-        return Listing([], [], 0, "This folder cannot be read. On macOS, allow Red Sun under System Settings → Privacy & Security → Files and Folders.")
-    except OSError as exc:
-        return Listing([], [], 0, f"Cannot read this folder: {exc}")
-    for p in entries:
-        if p.name.startswith(".") or p.suffix.lower() in BUNDLES:
-            continue
-        if p.is_dir():
-            folders.append(p)
-        elif core.is_image(p):
-            images.append(p)
-    if len(folders) + len(images) > LIST_LIMIT:
-        more = len(folders) + len(images) - LIST_LIMIT
-        folders, images = folders[:LIST_LIMIT], images[: max(0, LIST_LIMIT - len(folders))]
-    return Listing(folders, images, more)
+        proc = subprocess.run(dialog_command(kind, start), capture_output=True, text=True, timeout=DIALOG_TIMEOUT)
+    except FileNotFoundError:
+        return None, "No folder dialog is available on this system (on Linux install zenity or kdialog)."
+    except subprocess.TimeoutExpired:
+        return "", None
+    if proc.returncode != 0:  # cancelled ("User canceled." on macOS, exit 1 elsewhere)
+        return "", None
+    chosen = proc.stdout.strip()
+    if len(chosen) > 1:
+        chosen = chosen.rstrip("/\\")
+    return chosen, None
 
 
 # ---------------------------------------------------------------- rendering
@@ -225,10 +239,6 @@ def checked(f: dict[str, str], name: str) -> str:
     return " checked" if name in f else ""
 
 
-def browse_url(directory: Path, kind: str) -> str:
-    return "/browse?" + urlencode({"dir": str(directory), "for": kind})
-
-
 def describe_source(text: str) -> str:
     if not text.strip():
         return "Nothing selected yet."
@@ -248,14 +258,15 @@ def render_form(f: dict[str, str], problem: str | None = None) -> str:
 <form method="post" action="/jobs">
 <input type="hidden" name="session" value="{SESSION}">
 <button hidden tabindex="-1">Process</button>
-<!-- first submit button = what Enter does; keeps Enter from triggering Browse -->
+<!-- first submit button = what Enter does; keeps Enter from opening a dialog -->
 
 <fieldset>
 <legend>Source</legend>
 <p>
 <label for="path">Folder (or one image) to process</label><br>
-<input id="path" name="path" type="text" size="60" value="{e(f.get('path', ''))}" placeholder="Click Browse…">
-<button formaction="/browse" name="for" value="source">Browse…</button>
+<input id="path" name="path" type="text" size="60" value="{e(f.get('path', ''))}" placeholder="Click Choose folder…">
+<button formaction="/choose" name="for" value="source">Choose folder…</button>
+<button formaction="/choose" name="for" value="file">Choose one image…</button>
 </p>
 <p>{describe_source(f.get('path', ''))}</p>
 <p><label><input type="checkbox" name="recursive"{checked(f, 'recursive')}> Include subfolders (earlier run folders are skipped)</label></p>
@@ -341,7 +352,7 @@ def render_form(f: dict[str, str], problem: str | None = None) -> str:
 <p>
 <label for="out_dir">Output folder (optional)</label><br>
 <input id="out_dir" name="out_dir" type="text" size="60" value="{e(f.get('out_dir', ''))}" placeholder="a new red-sun-run-NNN folder next to your pictures">
-<button formaction="/browse" name="for" value="out">Browse…</button>
+<button formaction="/choose" name="for" value="out">Choose…</button>
 </p>
 <p><small>Leave blank to get a new numbered folder inside the folder you are processing.</small></p>
 </fieldset>
@@ -350,43 +361,6 @@ def render_form(f: dict[str, str], problem: str | None = None) -> str:
 </form>
 """
     return page("Red Sun", body)
-
-
-def render_browse(directory: Path, kind: str) -> str:
-    listing = list_folder(directory)
-    title = "Choose an output folder" if kind == "out" else "Choose a folder of images"
-    param = "out" if kind == "out" else "path"
-    places = " · ".join(f'<a href="{browse_url(p, kind)}">{e(name)}</a>' for name, p in shortcuts())
-    crumbs, trail = [], Path(directory.anchor)
-    root_link = f'<a href="{browse_url(trail, kind)}">{e(directory.anchor)}</a>'
-    for part in directory.parts[1:]:
-        trail = trail / part
-        crumbs.append(f'<a href="{browse_url(trail, kind)}">{e(part)}</a>')
-    count = len(listing.images)
-    here = f"{count} image{'s' if count != 1 else ''} here" if kind != "out" else "results will be written here"
-    problem = f"<p><strong>Problem:</strong> {e(listing.problem)}</p>" if listing.problem else ""
-    folders = "".join(f'<li><a href="{browse_url(p, kind)}">{e(p.name)}/</a></li>' for p in listing.folders) or "<li>No subfolders.</li>"
-    images = ""
-    if kind != "out":
-        items = "".join(f'<li><a href="/?{urlencode({"path": str(p)})}">{e(p.name)}</a></li>' for p in listing.images)
-        images = f"<h3>Images (click one to process only that image)</h3><ul>{items or '<li>No images here.</li>'}</ul>"
-    more = f"<p>…and {listing.more} more entries not shown.</p>" if listing.more else ""
-    body = f"""
-<h2>{title}</h2>
-<p>{places}</p>
-<p>{root_link} {' / '.join(crumbs)}</p>
-{problem}
-<form method="get" action="/">
-<input type="hidden" name="{param}" value="{e(str(directory))}">
-<button>Use this folder</button> <small>{here}</small>
-</form>
-<h3>Folders</h3>
-<ul>{folders}</ul>
-{images}
-{more}
-<p><a href="/">Cancel</a></p>
-"""
-    return page(f"Red Sun — {title}", body)
 
 
 def render_job(job: Job) -> str:
@@ -551,20 +525,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         url = urlsplit(self.path)
         path = url.path
-        query = {k: v[-1] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
         if path == "/":
-            fields = load_fields()
-            if "path" in query or "out" in query:  # returning from the folder browser
-                fields["path"] = query.get("path", fields.get("path", ""))
-                fields["out_dir"] = query.get("out", fields.get("out_dir", ""))
-                save_fields(fields)
-            return self.html(render_form(fields))
-        if path == "/browse":
-            kind = "out" if query.get("for") == "out" else "source"
-            directory = clean_path(query["dir"]) if query.get("dir") else start_dir(load_fields())
-            if not directory.is_dir():
-                directory = Path.home()
-            return self.html(render_browse(directory.resolve(), kind))
+            return self.html(render_form(load_fields()))
         if path == "/health/ready":
             return self.send(200, json.dumps({"status": "ready", "version": __version__}).encode(), "application/json")
         if path == "/favicon.ico":
@@ -608,13 +570,17 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized(fields):
             return self.text(403, "Forbidden: actions must come from the Red Sun page open in this browser.")
         path = urlsplit(self.path).path
-        if path == "/browse":  # remember the form as it is, then open the folder browser
+        if path == "/choose":  # remember the form as it is, show the system dialog, remember the answer
             save_fields(fields)
-            kind = "out" if fields.get("for") == "out" else "source"
+            kind = fields.get("for") if fields.get("for") in ("source", "file", "out") else "source"
             key = "out_dir" if kind == "out" else "path"
-            chosen = clean_path(fields[key]) if fields.get(key, "").strip() else None
-            directory = core.source_folder(chosen) if chosen and chosen.exists() else start_dir(fields)
-            return self.redirect(browse_url(directory, kind))
+            chosen, problem = native_pick(kind, start_dir({key: fields.get(key, "")} if fields.get(key, "").strip() else fields))
+            if problem:
+                return self.html(render_form(fields, problem))
+            if chosen:
+                fields[key] = chosen
+                save_fields(fields)
+            return self.redirect("/")
         if path == "/jobs":
             return self.create_job(fields)
         if m := re.fullmatch(r"/jobs/([0-9a-f]{12})/reveal", path):
@@ -636,10 +602,10 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self.html(render_form(fields, str(exc)), 400)
         if not fields.get("path", "").strip():
-            return self.html(render_form(fields, "Click Browse… and choose a folder of images first."), 400)
+            return self.html(render_form(fields, "Click Choose folder… and pick the folder with your pictures first."), 400)
         source = clean_path(fields["path"])
         if not source.exists():
-            return self.html(render_form(fields, f"Nothing exists at {source}. Click Browse… to choose again."), 400)
+            return self.html(render_form(fields, f"Nothing exists at {source}. Click Choose folder… to pick again."), 400)
         files = core.collect_files(source, recursive="recursive" in fields)
         if not files:
             kinds = ", ".join(sorted(core.SUPPORTED))

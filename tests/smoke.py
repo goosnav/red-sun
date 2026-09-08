@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -38,7 +39,7 @@ def main() -> int:
 
     assert get("/health/ready").status == 200, "readiness"
     home = get("/").read().decode()
-    assert "<h1>Red Sun</h1>" in home and 'name="session"' in home and 'formaction="/browse"' in home
+    assert "<h1>Red Sun</h1>" in home and 'name="session"' in home and 'formaction="/choose"' in home
     assert get("/static/style.css").headers["Content-Type"] == "text/css"
     assert get("/favicon.ico").status == 200
 
@@ -55,15 +56,20 @@ def main() -> int:
         Image.new("L", (400, 300), 90).save(photos / "gray.jpg")
         Image.new("RGB", (400, 300), (30, 30, 200)).save(photos / "sub" / "blue.webp")
 
-        # the folder browser: Browse… from the form remembers the form, then lists folders and images
+        # Choose folder…: the form is remembered, the OS dialog runs (stubbed here), the answer lands in the form
+        if sys.platform == "darwin":  # the real AppleScript must at least compile and run its non-dialog parts
+            probe = subprocess.run(["osascript", "-e", "activate", "-e", 'return POSIX path of (POSIX file "/tmp" as alias)'], capture_output=True, text=True, timeout=30)
+            assert probe.returncode == 0 and probe.stdout.strip().endswith("tmp/"), probe
+        calls = []
+        server.native_pick = lambda kind, start: (calls.append((kind, start)), (str(photos), None))[1]
         fields = {**server.defaults(), "session": server.SESSION, "for": "source", "palette": "win16", "dither": "pattern"}
-        resp = post("/browse", fields)                                  # 303 followed as GET /browse?dir=...
-        assert "/browse?" in resp.url and "Choose a folder of images" in resp.read().decode()
-        listing = get("/browse?" + urllib.parse.urlencode({"dir": str(photos), "for": "source"})).read().decode()
-        assert "2 images here" in listing and "sub/" in listing and "red.png" in listing
-        chosen = get("/?" + urllib.parse.urlencode({"path": str(photos)})).read().decode()
+        resp = post("/choose", fields)                                  # 303 followed as GET /
+        chosen = resp.read().decode()
+        assert calls == [("source", Path.home() / "Pictures")] or calls[0][0] == "source"
         assert str(photos) in chosen and "2 images in this folder" in chosen
         assert 'value="win16" selected' in chosen and 'value="pattern" selected' in chosen, "settings must survive the round trip"
+        server.native_pick = lambda kind, start: ("", None)             # cancelled: nothing changes
+        assert str(photos) in post("/choose", {**fields, "path": str(photos)}).read().decode()
 
         # process with the saved settings; default output = a numbered folder next to the pictures
         fields = {**server.load_fields(), "session": server.SESSION, "recursive": "on", "min_output_width": "800"}

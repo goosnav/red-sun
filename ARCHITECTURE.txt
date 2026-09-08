@@ -13,9 +13,9 @@ One shared core, two thin surfaces, one launcher contract.
         binds 127.0.0.1 (OS-chosen port), publishes the URL, serves forever
         v
     red_sun.server  (stdlib http.server, plain HTML forms, no JS) -- app/src/red_sun/server.py
-        GET  /                    the form (restored from config/settings.json; ?path= / ?out= come back from the browser)
-        POST /browse              save the form, then 303 to the in-page folder browser
-        GET  /browse?dir=&for=    folder browser: shortcuts, breadcrumbs, subfolders, images, "Use this folder"
+        GET  /                    the form (restored from config/settings.json)
+        POST /choose              save the form, show the OS folder/file dialog (osascript / PowerShell /
+                                  zenity), save the answer, 303 back to the form
         POST /jobs                save the form, validate, create <source>/red-sun-run-NNN, start the batch thread
         GET  /jobs/<id>           progress (<meta refresh> + <progress>) or results
         GET  /jobs/<id>/out/n     one output file; ?crop=1 = unscaled 1:1 centre crop
@@ -54,9 +54,9 @@ SECURITY MODEL (local app)
     - Server binds 127.0.0.1 only; port chosen by the OS (or GOOSNAV_PORT_PREFERENCE / RED_SUN_PORT).
     - Every POST needs the per-launch session token (hidden form field) AND a same-origin check
       (Sec-Fetch-Site, else Origin/Referer vs Host). A web page in another tab cannot drive the app.
-    - The folder browser lists directories the user can already read (it is their own machine); listing is a
-      read-only GET, unreadable folders are reported, never raised. The server never serves a user-supplied
-      path as a file; outputs are served by job id + index only.
+    - The OS dialog is a child process with explicit argv (osascript -e <script> / powershell -Command / zenity);
+      the chosen path is only ever used to read images and create the run folder. The server never serves a
+      user-supplied path as a file; outputs are served by job id + index only.
     - settings.json holds only known form keys (the session token is never persisted).
     - Subprocess (reveal) gets explicit argv; nothing is ever passed through a shell. All rendered text is HTML-escaped.
     - No secrets, no network calls, no telemetry. Source images are never modified.
@@ -92,8 +92,9 @@ WHY THESE CHOICES
         The grid remains an explicit option for the chunky retro look.
     stdlib http.server, not FastAPI:  one dependency (Pillow) means the lock resolves for all six targets with
         prebuilt wheels and first launch downloads ~20 MB. Swap server.py for a framework if an API is ever needed.
-    zero JavaScript, no native dialogs:  every action is a form POST or a link; the folder browser is a page, so
-        nothing ever opens outside the browser and no path is ever typed. Works with CSS and JS off.
+    zero JavaScript, the system's own dialogs:  every action is a form POST; Choose folder… runs the operating
+        system's standard folder panel (the one thing worth leaving the page for) and comes back with a real
+        path. Works with CSS and JS off. No Tk, no in-page file manager.
     run folders next to the pictures:  results are where the user already is; each batch is reproducible from its
         settings.json and never overwrites a previous run; recursive scans skip run folders.
     integer upscale only:  a "poster" is the same indexed image at 2x or 5x; no resampling, no new colours.

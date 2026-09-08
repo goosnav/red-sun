@@ -1,6 +1,7 @@
-"""GUI model checks: settings persistence, the folder browser listing, run-folder placement.
+"""GUI model checks: settings persistence, the OS folder dialog wrapper, run-folder placement.
 Run: uv run --project app --group dev pytest"""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -31,30 +32,47 @@ def test_form_defaults_round_trip():
     assert server.settings_from(server.defaults()) == core.Settings()
 
 
-def test_folder_listing_skips_hidden_and_counts_images(tmp_path):
-    (tmp_path / "b folder").mkdir()
-    (tmp_path / "A").mkdir()
-    (tmp_path / ".hidden").mkdir()
-    (tmp_path / "Photos Library.photoslibrary").mkdir()
-    Image.new("RGB", (8, 8)).save(tmp_path / "photo.JPG")
-    Image.new("RGB", (8, 8)).save(tmp_path / "scan.png")
-    (tmp_path / ".DS_Store").write_bytes(b"")
-    (tmp_path / "notes.txt").write_text("x")
-    listing = server.list_folder(tmp_path)
-    assert [p.name for p in listing.folders] == ["A", "b folder"]
-    assert [p.name for p in listing.images] == ["photo.JPG", "scan.png"]
-    assert listing.more == 0 and listing.problem is None
+def test_dialog_commands_are_explicit_argv_and_quote_paths(monkeypatch):
+    weird = Path('/tmp/it\'s "quoted" \\ odd')
+    monkeypatch.setattr(server.platform, "system", lambda: "Darwin")
+    cmd = server.dialog_command("source", weird)
+    assert cmd[0] == "osascript" and "choose folder" in cmd[2] and 'POSIX file "/tmp/it\'s \\"quoted\\" \\\\ odd"' in cmd[2]
+    assert "activate" in cmd[2]
+    assert 'choose file of type {"public.image"}' in server.dialog_command("file", weird)[2]
+    monkeypatch.setattr(server.platform, "system", lambda: "Windows")
+    cmd = server.dialog_command("out", weird)
+    assert cmd[:2] == ["powershell", "-NoProfile"] and "FolderBrowserDialog" in cmd[-1] and "it''s" in cmd[-1]
+    assert "OpenFileDialog" in server.dialog_command("file", weird)[-1]
+    monkeypatch.setattr(server.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/zenity")
+    assert server.dialog_command("source", weird)[-1] == "--directory"
+    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    assert server.dialog_command("source", weird)[0] == "kdialog"
 
 
-def test_unreadable_folder_is_reported_not_raised(tmp_path):
-    locked = tmp_path / "locked"
-    locked.mkdir()
-    locked.chmod(0)
-    try:
-        listing = server.list_folder(locked)
-        assert listing.problem and listing.folders == []
-    finally:
-        locked.chmod(0o755)
+def test_native_pick_handles_choice_cancel_and_missing_tool(monkeypatch, tmp_path):
+    def fake_run(argv, **kwargs):
+        assert isinstance(argv, list) and kwargs.get("timeout")
+        return subprocess.CompletedProcess(argv, 0, stdout="/Users/me/Pictures/scans/\n", stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    assert server.native_pick("source", tmp_path) == ("/Users/me/Pictures/scans", None)
+
+    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "User canceled."))
+    assert server.native_pick("source", tmp_path) == ("", None)
+
+    def missing(*a, **k):
+        raise FileNotFoundError("zenity")
+
+    monkeypatch.setattr(server.subprocess, "run", missing)
+    chosen, problem = server.native_pick("source", tmp_path)
+    assert chosen is None and "zenity" in problem
+
+    def slow(*a, **k):
+        raise subprocess.TimeoutExpired(a, 1)
+
+    monkeypatch.setattr(server.subprocess, "run", slow)
+    assert server.native_pick("out", tmp_path / "nope") == ("", None)   # a missing start folder is fine too
 
 
 def test_run_dir_is_created_next_to_the_source(tmp_path):
@@ -77,13 +95,3 @@ def test_start_dir_prefers_the_last_folder(tmp_path):
     assert server.start_dir({"path": str(photos / "a.png")}) == photos
     assert server.start_dir({"path": "", "out_dir": str(tmp_path)}) == tmp_path
     assert server.start_dir({"path": "/nowhere/at/all"}).is_dir()
-
-
-def test_browse_page_renders_links(tmp_path):
-    (tmp_path / "sub dir").mkdir()
-    Image.new("RGB", (8, 8)).save(tmp_path / "im age.png")
-    html = server.render_browse(tmp_path, "source")
-    assert "sub+dir" in html and "Use this folder" in html and "1 image here" in html
-    assert "im+age.png" in html and 'name="path"' in html
-    html = server.render_browse(tmp_path, "out")
-    assert 'name="out"' in html and "Images (" not in html

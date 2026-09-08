@@ -14,8 +14,8 @@ or `.\run.ps1` on Windows. Uses `uv` if you have it (recommended; exact locked v
 
 ## 2. Pick a folder (or one image)
 
-1. Under **Source**, click **Browse…**. A folder browser opens inside the page: shortcuts to Home, Desktop, Pictures, Documents, Downloads and any drives, a breadcrumb trail, the subfolders, and the images in the current folder with a count.
-2. Navigate to the folder with your pictures and click **Use this folder**. To process a single picture instead, click its name in the *Images* list.
+1. Under **Source**, click **Choose folder…**. Your system's standard folder dialog opens (the macOS Choose Folder panel, the Windows folder dialog). It starts in the last folder you used, or Pictures.
+2. Select the folder with your pictures and click **Choose**. To process a single picture instead, click **Choose one image…** and pick it.
 3. You are back on the form with the folder filled in and a line telling you how many images it holds and exactly where the results will go.
 
 Tick **Include subfolders** to process the whole tree. Earlier `red-sun-run-…` folders are skipped automatically, so re-running never re-processes old results.
@@ -28,7 +28,7 @@ When it says **Finished**, the table lists each output, its size and colour coun
 
 ## 4. Where the results go
 
-Right next to your pictures: `red-sun-run-001` inside the folder you processed, then `-002`, and so on, each with a `settings.json` recording exactly what produced it. For a single image the run folder is created beside that image. To send results somewhere else, click **Browse…** next to **Output folder** and choose a folder; it is used as-is.
+Right next to your pictures: `red-sun-run-001` inside the folder you processed, then `-002`, and so on, each with a `settings.json` recording exactly what produced it. For a single image the run folder is created beside that image. To send results somewhere else, click **Choose…** next to **Output folder** and pick a folder; it is used as-is.
 
 Everything you set on the form, including the last folder, is remembered the next time you open Red Sun.
 
@@ -69,9 +69,10 @@ Click **Quit Red Sun** in the page footer (or Ctrl+C in the terminal for `run.sh
 | Windows: SmartScreen "Windows protected your PC" | **More info** → **Run anyway**. |
 | Linux: double-click does nothing | File properties → Permissions → *Allow executing file as program*, then try again. |
 | Setup page shows an error code | `BOOT-NETWORK`: first launch needs internet once; click Retry. `LAUNCH-ROOT`: the launcher was moved away from the `app` folder; extract the ZIP again. Other codes name the exact problem; the log path is on the page. |
-| Browse… says the folder cannot be read | macOS asks once for permission when an app first touches Desktop, Documents or Downloads; allow Red Sun in System Settings → Privacy & Security → Files and Folders. |
+| The folder dialog does not appear | It may be behind the browser window; check the Dock / taskbar. On Linux, install `zenity` (or `kdialog`). The page waits up to 10 minutes, then treats it as cancelled. |
+| macOS asks whether Red Sun may access Desktop / Documents / Downloads | Allow it once; that is the normal system prompt for any app reading those folders. |
 | "Cannot create the output folder" | The pictures live somewhere read-only (a camera card, a locked share). Choose an **Output folder** you can write to. |
-| "Click Browse… and choose a folder of images first" | Nothing was selected; hidden files (leading dot) and non-image files are skipped. |
+| "Click Choose folder… and pick the folder with your pictures first" | Nothing was selected; hidden files (leading dot) and non-image files are skipped. |
 | Output looks noisy | Turn *Dither* to *None*, tick *Despeckle*, or use fewer colours. |
 | Colours look wrong on a logo | Turn off *Contrast boost*, or use *Adaptive*. |
 | Page never loads at `127.0.0.1` | Another program may be blocking loopback; check the terminal (`run.sh`) or the launcher log for the actual port. |

@@ -11,7 +11,7 @@ Red Sun does what Photoshop's *Image → Mode → Indexed Color* and *Bitmap (50
 - **Sharpen before the snap.** An unsharp mask ahead of quantization shortens soft edges into single hard steps.
 - **Poster sized.** Sources smaller than your minimum width (default 3200 px) are multiplied up by a whole number. Larger sources keep every pixel. The files stay small because they are indexed.
 - **Results next to your pictures.** Every batch lands in a new `red-sun-run-001`, `-002`, … folder inside the folder you processed, with a `settings.json` beside the outputs. No hunting through app folders. Choose another output folder if you prefer.
-- **Browse, don't type.** A folder browser inside the page (Home, Desktop, Pictures, drives, breadcrumbs, image counts) picks the folder or a single image. No native dialogs, no paths to type.
+- **Choose folder… opens your system's own folder dialog** (the standard macOS / Windows panel), so no paths to type. Pick the folder with your pictures, or a single image.
 - **Remembers you.** Every setting and the last folder persist between sessions.
 - **Batch.** One bad file never stops the rest; recursive scans skip earlier run folders. Originals are never modified.
 - **A GUI that looks like 1999 on purpose.** Plain HTML forms, zero JavaScript. Also a CLI with the same options.
