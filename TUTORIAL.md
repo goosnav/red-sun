@@ -71,7 +71,7 @@ Click **Quit Red Sun** in the page footer (or Ctrl+C in the terminal for `run.sh
 | Linux: double-click does nothing | File properties → Permissions → *Allow executing file as program*, then try again. |
 | Setup page shows an error code | `BOOT-NETWORK`: first launch needs internet once; click Retry. `LAUNCH-ROOT`: the launcher was moved away from the `app` folder; extract the ZIP again. Other codes name the exact problem; the log path is on the page. |
 | The folder dialog does not appear | It may be behind the browser window; check the Dock / taskbar. On Linux, install `zenity` (or `kdialog`). The page waits up to 10 minutes, then treats it as cancelled. |
-| macOS asks whether Red Sun may access Desktop / Documents / Downloads | Allow it once; that is the normal system prompt for any app reading those folders. |
+| macOS asks whether Red Sun may access Desktop / Documents / Downloads, or files on a removable volume | Allow it once; that is the normal system prompt for any app reading those places. Until you answer it, the Red Sun page waits. If you dismissed it by mistake, re-enable Red Sun under System Settings → Privacy & Security → Files and Folders. |
 | "Cannot create the output folder" | The pictures live somewhere read-only (a camera card, a locked share). Choose an **Output folder** you can write to. |
 | "Click Choose folder… and pick the folder with your pictures first" | Nothing was selected; hidden files (leading dot) and non-image files are skipped. |
 | Output looks noisy | Turn *Dither* to *None*, tick *Despeckle*, or use fewer colours. |
