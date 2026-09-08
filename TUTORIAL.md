@@ -40,7 +40,7 @@ Red Sun's defaults follow the Photoshop recipe that keeps edges hard: native res
 - **Photos:** *Adaptive* gives exactly N colours by median cut; *Flat buckets* posterizes a photo into its dominant tones.
 - **Authentic Paint / Netscape:** *MS Paint classic (28)* or *Web-safe 216*.
 - **Classic shading:** *Dither* = *Diffusion* (Floyd–Steinberg grain), *Pattern* (ordered halftone) or *Noise*. Raise *strength* to 100 % for the full-range pattern in black & white; 40–60 % is subtle in colour.
-- **Scans, line art, comics:** *Mode* = *Black & white*. Blank threshold = automatic (Otsu); 128 = Photoshop's 50 %. Higher = more black.
+- **Black & white images have their own section.** In Auto mode a grayscale source gets the *Black & white images* look (threshold, its own dither, sharpen, contrast stretch, despeckle) while colour sources get the *Color images* look, so a mixed folder comes out right in one run. Blank threshold = automatic (Otsu); 128 = Photoshop's 50 %. Higher = more black. Force everything one way with *Mode*.
 - **Grainy or JPEG-noisy photos:** tick *Despeckle*. It removes grain before the snap at the cost of the very finest detail.
 - **A logo with transparency:** transparent areas are flattened onto the *Matte* colour (white, Netscape gray or black).
 - **Chunky retro pixels on purpose:** set *Pixel grid width* (320, 480, 640…). This is the one place Red Sun resamples, and it does it once, before the snap.

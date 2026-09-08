@@ -21,6 +21,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--despeckle", action="store_true", help="3x3 median before processing")
     p.add_argument("--threshold", type=int, help="black & white cut 0-255 (default: automatic; 128 = Photoshop 50%%)")
     p.add_argument("--matte", choices=tuple(core.MATTES), default="white", help="background for transparent pixels")
+    p.add_argument("--bw-dither", choices=core.DITHERS, default="none", help="dither for images that come out black & white")
+    p.add_argument("--bw-dither-strength", type=int, default=60)
+    p.add_argument("--bw-sharpen", action="store_true")
+    p.add_argument("--bw-contrast", action="store_true", help="autocontrast before the threshold")
+    p.add_argument("--bw-despeckle", action="store_true")
     p.add_argument("--grid", type=int, help="downsample once to this pixel-grid width (default: keep native resolution)")
     p.add_argument("--min-output-width", type=int, default=3200, help="nearest-neighbour multiply until at least this wide (default 3200; 0 = never)")
     p.add_argument("--format", choices=core.FORMATS, default="png")
@@ -36,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
         mode=a.mode, palette=a.palette, colors=a.colors, dither=a.dither, dither_strength=a.dither_strength,
         sharpen=a.sharpen, despeckle=a.despeckle, contrast=a.contrast, threshold=a.threshold,
         matte=a.matte, grid_width=a.grid, min_output_width=a.min_output_width, fmt=a.format,
+        bw_dither=a.bw_dither, bw_dither_strength=a.bw_dither_strength, bw_sharpen=a.bw_sharpen,
+        bw_contrast=a.bw_contrast, bw_despeckle=a.bw_despeckle,
     )
     settings.validate()
     files = core.collect_files(a.input, recursive=a.recursive)

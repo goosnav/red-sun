@@ -67,7 +67,7 @@ def test_every_dither_mode_stays_inside_the_palette(dither):
 
 @pytest.mark.parametrize("dither", core.DITHERS)
 def test_bw_modes_are_pure_black_and_white(dither):
-    s = core.Settings(mode="bw", dither=dither, min_output_width=0)
+    s = core.Settings(mode="bw", bw_dither=dither, min_output_width=0)
     done = core.process(photo(300, 200), s)
     assert done.image.mode == "1" and done.colors == 2
     s = core.Settings(mode="auto", min_output_width=0)
@@ -80,9 +80,9 @@ def test_pattern_dither_actually_dithers_and_bayer_is_tiled():
     px = tile.load()
     assert px[0, 0] == px[8, 8] and px[0, 0] != px[1, 0]           # 8x8 period, non-constant
     flat = Image.new("L", (64, 64), 128)
-    s = core.Settings(mode="bw", dither="pattern", dither_strength=100, threshold=128, contrast=False, sharpen=False, min_output_width=0)
+    s = core.Settings(mode="bw", bw_dither="pattern", bw_dither_strength=100, threshold=128, min_output_width=0)
     assert core.process(flat, s).colors == 2                         # mid gray becomes a pattern
-    s.dither = "none"
+    s.bw_dither = "none"
     assert core.process(flat, s).colors == 1                         # without dither it is one solid tone
 
 
@@ -253,3 +253,22 @@ def test_edge_pixels_snap_to_a_neighbouring_bucket_not_a_far_mid_tone():
     px = out.load()
     fringe = sum(1 for y in range(20, 195) for x in range(10, 280) if px[x, y] == (126, 112, 96))
     assert fringe == 0, fringe                                           # no brown anywhere near the strokes
+
+
+def test_black_and_white_images_use_their_own_look(tmp_path: Path):
+    """Colour dither on, B&W dither off: a gray image in the same batch stays pure flat black/white."""
+    src = tmp_path / "mixed"
+    src.mkdir()
+    photo(200, 150).save(src / "color.png")
+    Image.new("L", (200, 150), 128).save(src / "gray.png")
+    s = core.Settings(dither="pattern", dither_strength=100, sharpen=True, contrast=True, min_output_width=0)
+    results = core.run_batch(core.collect_files(src), tmp_path / "out", s)
+    by_name = {r.source.name: r for r in results}
+    assert by_name["gray.png"].mode == "bw" and by_name["gray.png"].colors == 1      # no dither texture: one flat tone
+    assert by_name["color.png"].mode == "color" and by_name["color.png"].colors > 2   # colour side is dithered
+    assert by_name["gray.png"].outputs[0].name == "gray_redsun_bw.png"              # tag follows the B&W look
+    assert by_name["color.png"].outputs[0].name == "color_redsun_flat16-pattern.png"
+    s.bw_dither = "pattern"
+    s.bw_dither_strength = 100
+    assert core.process(Image.new("L", (64, 64), 128), s).colors == 2               # now the B&W side dithers
+    assert core.Settings(bw_dither="pattern").tag("bw") == "bw-pattern"

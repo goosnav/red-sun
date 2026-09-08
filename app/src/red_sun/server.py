@@ -78,10 +78,12 @@ def defaults() -> dict[str, str]:
         "path": "", "out_dir": "", "mode": s.mode, "palette": s.palette, "colors": str(s.colors),
         "dither": s.dither, "dither_strength": str(s.dither_strength),
         "threshold": "", "matte": s.matte, "grid_width": "", "min_output_width": str(s.min_output_width), "fmt": s.fmt,
+        "bw_dither": s.bw_dither, "bw_dither_strength": str(s.bw_dither_strength),
     }
 
 
-FORM_KEYS = set(defaults()) | {"recursive", "despeckle"}
+CHECKBOXES = {"recursive", "sharpen", "despeckle", "contrast", "bw_sharpen", "bw_despeckle", "bw_contrast"}
+FORM_KEYS = set(defaults()) | CHECKBOXES
 
 
 def load_fields() -> dict[str, str]:
@@ -116,6 +118,8 @@ def settings_from(f: dict[str, str]) -> core.Settings:
         sharpen="sharpen" in f, despeckle="despeckle" in f, contrast="contrast" in f,
         threshold=num("threshold", None), matte=f.get("matte", "white"), grid_width=num("grid_width", None),
         min_output_width=num("min_output_width", 3200), fmt=f.get("fmt", "png"),
+        bw_dither=f.get("bw_dither", "none"), bw_dither_strength=num("bw_dither_strength", 60),
+        bw_sharpen="bw_sharpen" in f, bw_despeckle="bw_despeckle" in f, bw_contrast="bw_contrast" in f,
     )
     s.validate()
     return s
@@ -277,11 +281,16 @@ def render_form(f: dict[str, str], problem: str | None = None) -> str:
 <p>
 <label for="mode">Mode</label>
 <select id="mode" name="mode">
-{option('auto', 'Auto (black & white for grayscale sources)', f.get('mode', 'auto'))}
-{option('color', 'Color', f.get('mode', 'auto'))}
-{option('bw', 'Black & white', f.get('mode', 'auto'))}
+{option('auto', 'Auto: decide per image (grayscale sources get the B&W look)', f.get('mode', 'auto'))}
+{option('color', 'Treat every image as color', f.get('mode', 'auto'))}
+{option('bw', 'Treat every image as black & white', f.get('mode', 'auto'))}
 </select>
 </p>
+<p><small>A folder can mix colour and black &amp; white images: each gets its own look below. Settings for a kind that is not present are simply unused.</small></p>
+</fieldset>
+
+<fieldset>
+<legend>Color images</legend>
 <p>
 <label for="palette">Palette</label>
 <select id="palette" name="palette">
@@ -311,11 +320,6 @@ def render_form(f: dict[str, str], problem: str | None = None) -> str:
 <p><label><input type="checkbox" name="contrast"{checked(f, 'contrast')}> Contrast boost (hue-safe)</label></p>
 <p><label><input type="checkbox" name="despeckle"{checked(f, 'despeckle')}> Despeckle (3×3 median; removes grain, costs fine detail)</label></p>
 <p>
-<label for="threshold">Black &amp; white threshold</label>
-<input id="threshold" name="threshold" type="number" min="0" max="255" value="{e(f.get('threshold', ''))}" size="4">
-<small>blank = automatic (Otsu); 128 = Photoshop's 50%</small>
-</p>
-<p>
 <label for="matte">Matte for transparent pixels</label>
 <select id="matte" name="matte">
 {option('white', 'White', f.get('matte', 'white'))}
@@ -323,6 +327,30 @@ def render_form(f: dict[str, str], problem: str | None = None) -> str:
 {option('black', 'Black', f.get('matte', 'white'))}
 </select>
 </p>
+</fieldset>
+
+<fieldset>
+<legend>Black &amp; white images</legend>
+<p>
+<label for="threshold">Threshold</label>
+<input id="threshold" name="threshold" type="number" min="0" max="255" value="{e(f.get('threshold', ''))}" size="4">
+<small>0–255; blank = automatic (Otsu); 128 = Photoshop's 50%</small>
+</p>
+<p>
+<label for="bw_dither">Dither</label>
+<select id="bw_dither" name="bw_dither">
+{option('none', 'None (pure black or white)', f.get('bw_dither', 'none'))}
+{option('diffusion', 'Diffusion (Floyd–Steinberg)', f.get('bw_dither', 'none'))}
+{option('pattern', 'Pattern (ordered 8×8 halftone)', f.get('bw_dither', 'none'))}
+{option('noise', 'Noise', f.get('bw_dither', 'none'))}
+</select>
+<label for="bw_dither_strength">strength</label>
+<input id="bw_dither_strength" name="bw_dither_strength" type="number" min="0" max="100" value="{e(f.get('bw_dither_strength', '60'))}" size="3"> %
+<small>(pattern and noise only; 100 = full halftone)</small>
+</p>
+<p><label><input type="checkbox" name="bw_sharpen"{checked(f, 'bw_sharpen')}> Sharpen before the threshold</label></p>
+<p><label><input type="checkbox" name="bw_contrast"{checked(f, 'bw_contrast')}> Contrast stretch (autocontrast; helps faded scans)</label></p>
+<p><label><input type="checkbox" name="bw_despeckle"{checked(f, 'bw_despeckle')}> Despeckle (3×3 median)</label></p>
 </fieldset>
 
 <fieldset>

@@ -32,6 +32,8 @@ One shared core, two thin surfaces, one launcher contract.
 
 PIPELINE (core.process) — the Photoshop "Indexed Color / Bitmap" recipe, at native resolution
 -----------------------
+    0. classify: auto_mode (or the forced mode); Settings.for_mode(mode) swaps in the B&W look knobs
+       (bw_dither, bw_dither_strength, bw_sharpen, bw_despeckle, bw_contrast) for black & white images
     1. flatten: EXIF rotate, composite transparency onto the matte, RGB
     2. optional pixel grid: ONE Lanczos downscale, only when a grid width is given (default: none)
     3. optional despeckle: 3x3 median (default off)

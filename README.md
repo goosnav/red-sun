@@ -65,21 +65,25 @@ python -m red_sun <file-or-folder>
     [--mode auto|color|bw] [--palette dominant|adaptive|paint|win16|websafe] [--colors N]
     [--dither none|diffusion|pattern|noise] [--dither-strength 0-100]
     [--sharpen] [--contrast] [--despeckle] [--threshold 0-255] [--matte white|gray|black]
+    [--bw-dither none|diffusion|pattern|noise] [--bw-dither-strength 0-100] [--bw-sharpen] [--bw-contrast] [--bw-despeckle]
     [--grid WIDTH] [--min-output-width PX] [--format png|bmp|gif|all] [--recursive] [--out DIR]
 ```
 
 ## The knobs
 
+Colour images and black-and-white images each have their own look. In Auto mode every image is classified on its own (grayscale sources get the B&W look), so a folder can mix both; the settings for a kind that is not present are simply unused.
+
 | Setting | Default | What it does |
 |---|---|---|
-| Mode | Auto | Auto picks black & white for grayscale sources, colour otherwise. |
+| Mode | Auto | Decide per image; or treat every image as colour, or every image as black & white. |
 | Palette | Flat buckets, N ≤ 16 | The image's own flat colours, up to N, most common first; blends and anti-aliasing never become buckets. *Adaptive* is median cut with exactly N (photos). Fixed palettes give the authentic Paint / Windows / Netscape look. |
-| Dither | None | *Diffusion* = Floyd–Steinberg; *Pattern* = ordered 8×8 Bayer; *Noise* = random. None keeps regions flat. |
+| Dither (colour) | None | *Diffusion* = Floyd–Steinberg; *Pattern* = ordered 8×8 Bayer; *Noise* = random. None keeps regions flat. |
 | Dither strength | 60 % | Amplitude of the pattern or noise field. 100 % is the full classic halftone in black & white. |
 | Sharpen | off | Unsharp mask before the snap. Helps photos; on flat art it draws halos, so leave it off for comics. |
 | Contrast boost | off | Black & white: autocontrast stretch (good for scans). Colour: a fixed, hue-safe 1.3×. |
 | Despeckle | off | 3×3 median first. Kills film grain and JPEG noise at the cost of the finest detail. |
-| Threshold | automatic | Black & white cut, 0–255. Blank = Otsu. 128 = Photoshop's 50%. |
+| B&W: Threshold | automatic | Black & white cut, 0–255. Blank = Otsu. 128 = Photoshop's 50%. |
+| B&W: Dither, strength, Sharpen, Contrast stretch, Despeckle | none / 60 % / off / off / off | The same knobs, applied only to images that come out black & white. Default is a pure either-or threshold. |
 | Matte | White | Colour that transparent pixels are flattened onto. Netscape gray (#CCCCCC) and black available. |
 | Pixel grid width | native | Blank keeps every source pixel. A number downsamples once (Lanczos) to a chunky grid before the snap. |
 | Minimum output width | 3200 | Results narrower than this are multiplied by a whole number with nearest neighbour. 0 = never. |

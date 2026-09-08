@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -56,6 +56,12 @@ class Settings:
     despeckle: bool = False         # 3x3 median before everything else
     contrast: bool = False          # B&W: autocontrast stretch; color: fixed hue-safe boost
     threshold: int | None = None    # B&W cut 0-255; None = Otsu; 128 = Photoshop's 50%
+    # the same look knobs for images that come out black & white (auto mode decides per image)
+    bw_dither: str = "none"
+    bw_dither_strength: int = 60
+    bw_sharpen: bool = False
+    bw_despeckle: bool = False
+    bw_contrast: bool = False
     matte: str = "white"            # background for transparent pixels: white | gray | black
     grid_width: int | None = None   # optional downscale to a chunky pixel grid; None = native
     min_output_width: int = 3200    # integer nearest-neighbour upscale until at least this wide
@@ -66,6 +72,8 @@ class Settings:
             (self.mode in MODES, f"mode must be one of {MODES}"),
             (self.palette in PALETTE_CHOICES, f"palette must be one of {PALETTE_CHOICES}"),
             (self.dither in DITHERS, f"dither must be one of {DITHERS}"),
+            (self.bw_dither in DITHERS, f"B&W dither must be one of {DITHERS}"),
+            (0 <= self.bw_dither_strength <= 100, "B&W dither strength must be 0-100"),
             (self.fmt in FORMATS, f"format must be one of {FORMATS}"),
             (self.matte in MATTES, f"matte must be one of {tuple(MATTES)}"),
             (2 <= self.colors <= 256, "colors must be 2-256"),
@@ -78,10 +86,18 @@ class Settings:
             if not ok:
                 raise ValueError(message)
 
+    def for_mode(self, mode: str) -> "Settings":
+        """The look knobs that apply to this image: the B&W set when it is black & white."""
+        if mode != "bw":
+            return self
+        return replace(self, dither=self.bw_dither, dither_strength=self.bw_dither_strength,
+                       sharpen=self.bw_sharpen, despeckle=self.bw_despeckle, contrast=self.bw_contrast)
+
     def tag(self, mode: str) -> str:
         names = {"paint": "paint28", "win16": "win16", "websafe": "web216", "adaptive": f"{self.colors}c", "dominant": f"flat{self.colors}"}
+        look = self.for_mode(mode)
         name = "bw" if mode == "bw" else names[self.palette]
-        return name if self.dither == "none" else f"{name}-{self.dither}"
+        return name if look.dither == "none" else f"{name}-{look.dither}"
 
 
 @dataclass
@@ -411,8 +427,9 @@ def quantize_bw(rgb: Image.Image, s: Settings) -> Image.Image:
 def process(img: Image.Image, s: Settings) -> Processed:
     s.validate()
     mode = auto_mode(img) if s.mode == "auto" else s.mode
-    rgb = prepare(img, s)
-    out = quantize_bw(rgb, s) if mode == "bw" else quantize_color(rgb, s)
+    look = s.for_mode(mode)
+    rgb = prepare(img, look)
+    out = quantize_bw(rgb, look) if mode == "bw" else quantize_color(rgb, look)
     factor = max(1, -(-s.min_output_width // out.width))  # ceil: never resample, only multiply
     return Processed(integer_upscale(out, factor), mode, count_colors(out), factor)
 

@@ -85,7 +85,7 @@ def main() -> int:
         assert "3 of 3 images saved" in page, page
         run = photos / "red-sun-run-001"
         names = sorted(p.name for p in run.iterdir())
-        assert names == ["blue_redsun_win16-pattern.png", "gray_redsun_bw-pattern.png", "red_redsun_win16-pattern.png", "settings.json"], names
+        assert names == ["blue_redsun_win16-pattern.png", "gray_redsun_bw.png", "red_redsun_win16-pattern.png", "settings.json"], names  # B&W has its own (undithered) look
         with Image.open(run / "red_redsun_win16-pattern.png") as im:
             assert im.mode == "P" and im.size == (800, 600), (im.mode, im.size)   # 400 px source x2
         assert urllib.request.urlopen(job_url + "/out/0", timeout=10).headers["Content-Type"] == "image/png"

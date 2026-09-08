@@ -19,10 +19,12 @@ def config(tmp_path, monkeypatch):
 def test_settings_persist_and_ignore_junk(config):
     assert server.load_fields() == server.defaults()          # nothing saved yet
     fields = {**server.defaults(), "palette": "win16", "dither": "pattern", "path": "/somewhere", "recursive": "on",
-              "session": "secret-token", "for": "source", "evil": "x"}
+              "bw_dither": "noise", "bw_contrast": "on", "session": "secret-token", "for": "source", "evil": "x"}
     server.save_fields(fields)
     saved = server.load_fields()
     assert saved["palette"] == "win16" and saved["dither"] == "pattern" and saved["recursive"] == "on"
+    assert saved["bw_dither"] == "noise" and saved["bw_contrast"] == "on"
+    assert server.settings_from(saved).bw_contrast and server.settings_from(saved).bw_dither == "noise"
     assert "session" not in saved and "for" not in saved and "evil" not in saved
     (config / "settings.json").write_text("{ not json")
     assert server.load_fields() == server.defaults()          # corrupt file falls back to defaults
