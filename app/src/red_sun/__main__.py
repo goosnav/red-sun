@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-output-width", type=int, default=3200, help="nearest-neighbour multiply until at least this wide (default 3200; 0 = never)")
     p.add_argument("--format", choices=core.FORMATS, default="png")
     p.add_argument("--recursive", action="store_true", help="include subfolders")
-    p.add_argument("--out", type=Path, help="output folder (default: the next red-sun-run-NNN folder)")
+    p.add_argument("--out", type=Path, help="output folder (default: a new red-sun-run-NNN folder inside the input folder)")
     a = p.parse_args(argv)
 
     if a.input is None:
@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     files = core.collect_files(a.input, recursive=a.recursive)
     if not files:
         p.exit(1, "No supported images found.\n")
-    out_dir = a.out or core.next_run_dir()
+    out_dir = a.out or core.next_run_dir(core.source_folder(a.input))
 
     def report(i: int, n: int, r: core.Result) -> None:
         if r.error:

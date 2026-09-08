@@ -12,24 +12,25 @@
 
 or `.\run.ps1` on Windows. Uses `uv` if you have it (recommended; exact locked versions), otherwise makes a `.venv` with Python 3.10+ and installs Pillow. Your browser opens at a local address like `http://127.0.0.1:54321`.
 
-## 2. Convert one image
+## 2. Pick a folder (or one image)
 
-1. Under **Source**, click **Choose Files** next to *Choose images* and pick a photo (PNG, JPG, TIFF, BMP, WebP, GIF). This is the browser's own file dialog; Red Sun never opens windows of its own.
-2. Leave everything at its defaults.
-3. Click **Process**.
+1. Under **Source**, click **Browse…**. A folder browser opens inside the page: shortcuts to Home, Desktop, Pictures, Documents, Downloads and any drives, a breadcrumb trail, the subfolders, and the images in the current folder with a count.
+2. Navigate to the folder with your pictures and click **Use this folder**. To process a single picture instead, click its name in the *Images* list.
+3. You are back on the form with the folder filled in and a line telling you how many images it holds and exactly where the results will go.
 
-You land on the batch page. When it says **Finished**, the table lists the output, its size, and how many colours it uses. Below that, each result shows an **unscaled 1:1 crop** of the saved file, and a **View every pixel** link that displays the whole file at natural size with nearest-neighbour rendering so browser zoom (⌘+ / Ctrl+) shows the rigid pixel boundaries. **Show output folder** opens the run folder in Finder / Explorer.
+Tick **Include subfolders** to process the whole tree. Earlier `red-sun-run-…` folders are skipped automatically, so re-running never re-processes old results.
 
-## 3. Convert a whole folder
+## 3. Process
 
-- **Browser folder picker:** click **Choose Files** next to *Or choose a whole folder* and pick a folder. The browser uploads every image in it (subfolders included) to Red Sun on your own machine. Fine for hundreds of photos.
-- **Typed path (fastest for thousands of files):** paste the folder path into *Or type a file or folder path*, tick *include subfolders* if you want the whole tree. Nothing is uploaded; Red Sun reads the files directly.
+Leave the defaults (or change the look, see below) and click **Process**. The page refreshes itself every two seconds with a progress bar and a row per image. Files that cannot be read are listed as *Failed* with the reason; the rest still finish.
 
-Click **Process**. The page refreshes itself every two seconds with a progress bar and a row per image. Files that cannot be read are listed as *Failed* with the reason; the rest still finish.
+When it says **Finished**, the table lists each output, its size and colour count. Below that, each result shows an **unscaled 1:1 crop** of the saved file, and a **View every pixel** link that displays the whole file at natural size with nearest-neighbour rendering so browser zoom (⌘+ / Ctrl+) shows the rigid pixel boundaries. **Show output folder** opens the run folder in Finder / Explorer.
 
 ## 4. Where the results go
 
-Every run gets its own folder: `~/Pictures/Red Sun/red-sun-run-001`, then `-002`, and so on, with a `settings.json` recording exactly what produced it. The next folder name is shown as the placeholder of the **Output folder** field; type another folder there to use it instead (it is used as-is, no numbering).
+Right next to your pictures: `red-sun-run-001` inside the folder you processed, then `-002`, and so on, each with a `settings.json` recording exactly what produced it. For a single image the run folder is created beside that image. To send results somewhere else, click **Browse…** next to **Output folder** and choose a folder; it is used as-is.
+
+Everything you set on the form, including the last folder, is remembered the next time you open Red Sun.
 
 ## 5. Getting the look you want
 
@@ -68,10 +69,11 @@ Click **Quit Red Sun** in the page footer (or Ctrl+C in the terminal for `run.sh
 | Windows: SmartScreen "Windows protected your PC" | **More info** → **Run anyway**. |
 | Linux: double-click does nothing | File properties → Permissions → *Allow executing file as program*, then try again. |
 | Setup page shows an error code | `BOOT-NETWORK`: first launch needs internet once; click Retry. `LAUNCH-ROOT`: the launcher was moved away from the `app` folder; extract the ZIP again. Other codes name the exact problem; the log path is on the page. |
-| Uploading a huge folder is slow | Use the typed path instead; nothing is uploaded and files are read in place. |
-| "Choose images, a folder, or type a path first" | Nothing supported was selected; hidden files (leading dot) and non-image files are skipped. |
+| Browse… says the folder cannot be read | macOS asks once for permission when an app first touches Desktop, Documents or Downloads; allow Red Sun in System Settings → Privacy & Security → Files and Folders. |
+| "Cannot create the output folder" | The pictures live somewhere read-only (a camera card, a locked share). Choose an **Output folder** you can write to. |
+| "Click Browse… and choose a folder of images first" | Nothing was selected; hidden files (leading dot) and non-image files are skipped. |
 | Output looks noisy | Turn *Dither* to *None*, tick *Despeckle*, or use fewer colours. |
 | Colours look wrong on a logo | Turn off *Contrast boost*, or use *Adaptive*. |
 | Page never loads at `127.0.0.1` | Another program may be blocking loopback; check the terminal (`run.sh`) or the launcher log for the actual port. |
 
-Application data for the ZIP app lives in `~/Library/Application Support/Red Sun` (macOS), `%LOCALAPPDATA%\Red Sun` (Windows), `~/.local/share/Red Sun` (Linux). Deleting that folder resets the runtime; the next launch downloads it again. Your outputs are separate, under `~/Pictures/Red Sun`.
+Application data for the ZIP app lives in `~/Library/Application Support/Red Sun` (macOS), `%LOCALAPPDATA%\Red Sun` (Windows), `~/.local/share/Red Sun` (Linux). Deleting that folder resets the runtime; the next launch downloads it again. Your outputs are separate, next to your pictures. Settings live in the app folder's `config/settings.json` (or `~/.config/red-sun` / `%APPDATA%\Red Sun` when run from source).

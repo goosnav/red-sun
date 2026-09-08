@@ -13,9 +13,10 @@ One shared core, two thin surfaces, one launcher contract.
         binds 127.0.0.1 (OS-chosen port), publishes the URL, serves forever
         v
     red_sun.server  (stdlib http.server, plain HTML forms, no JS) -- app/src/red_sun/server.py
-        GET  /                    the form
-        POST /jobs                multipart: browser file/folder uploads streamed to a temp dir,
-                                  plus an optional typed path -> batch thread -> 303 /jobs/<id>
+        GET  /                    the form (restored from config/settings.json; ?path= / ?out= come back from the browser)
+        POST /browse              save the form, then 303 to the in-page folder browser
+        GET  /browse?dir=&for=    folder browser: shortcuts, breadcrumbs, subfolders, images, "Use this folder"
+        POST /jobs                save the form, validate, create <source>/red-sun-run-NNN, start the batch thread
         GET  /jobs/<id>           progress (<meta refresh> + <progress>) or results
         GET  /jobs/<id>/out/n     one output file; ?crop=1 = unscaled 1:1 centre crop
         GET  /jobs/<id>/view/n    the file at natural size with nearest-neighbour rendering
@@ -53,16 +54,18 @@ SECURITY MODEL (local app)
     - Server binds 127.0.0.1 only; port chosen by the OS (or GOOSNAV_PORT_PREFERENCE / RED_SUN_PORT).
     - Every POST needs the per-launch session token (hidden form field) AND a same-origin check
       (Sec-Fetch-Site, else Origin/Referer vs Host). A web page in another tab cannot drive the app.
-    - Uploads are streamed by a small hand-written multipart parser (boundary validated by the following
-      CRLF/--, text fields capped at 64 KB, file names reduced to their base name) into a temp dir that is
-      deleted when the job ends. The server never serves a user-supplied path; outputs are served by job id + index.
+    - The folder browser lists directories the user can already read (it is their own machine); listing is a
+      read-only GET, unreadable folders are reported, never raised. The server never serves a user-supplied
+      path as a file; outputs are served by job id + index only.
+    - settings.json holds only known form keys (the session token is never persisted).
     - Subprocess (reveal) gets explicit argv; nothing is ever passed through a shell. All rendered text is HTML-escaped.
     - No secrets, no network calls, no telemetry. Source images are never modified.
 
 DATA LOCATIONS
 --------------
-    Outputs:          ~/Pictures/Red Sun/red-sun-run-NNN/ (+ settings.json), or the folder typed in the form / --out
-    Uploads:          system temp dir, red-sun-upload-*, removed after the batch
+    Outputs:          <folder you processed>/red-sun-run-NNN/ (+ settings.json), or the chosen output folder / --out
+    Settings:         GOOSNAV_CONFIG_DIR/settings.json under the launcher; otherwise ~/Library/Application Support/Red Sun/config,
+                      %APPDATA%\Red Sun, or $XDG_CONFIG_HOME/red-sun
     Launcher runtime: macOS ~/Library/Application Support/Red Sun, Windows %LOCALAPPDATA%\Red Sun,
                       Linux ~/.local/share/Red Sun  (python/, runtimes/, cache/, logs/, runtime/)
     Source checkout:  no writes except an optional .venv/ created by run.sh without uv.
@@ -89,7 +92,8 @@ WHY THESE CHOICES
         The grid remains an explicit option for the chunky retro look.
     stdlib http.server, not FastAPI:  one dependency (Pillow) means the lock resolves for all six targets with
         prebuilt wheels and first launch downloads ~20 MB. Swap server.py for a framework if an API is ever needed.
-    zero JavaScript, no native dialogs:  every action is a form POST; file and folder selection are the browser's
-        own <input type=file> (with webkitdirectory). Works with CSS and JS off, and never pops a window of its own.
-    numbered run folders:  each batch is reproducible from its settings.json and never overwrites a previous run.
+    zero JavaScript, no native dialogs:  every action is a form POST or a link; the folder browser is a page, so
+        nothing ever opens outside the browser and no path is ever typed. Works with CSS and JS off.
+    run folders next to the pictures:  results are where the user already is; each batch is reproducible from its
+        settings.json and never overwrites a previous run; recursive scans skip run folders.
     integer upscale only:  a "poster" is the same indexed image at 2x or 5x; no resampling, no new colours.

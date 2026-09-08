@@ -2,10 +2,10 @@
 
 Every page is rendered here from the same core the CLI uses. State-changing
 requests need the per-launch session token (a hidden form field) and a
-same-origin check, so a malicious website cannot drive the app. Images arrive
-through ordinary browser file/folder inputs (multipart, streamed to a temp
-directory) or as a typed path; nothing opens outside the browser except the
-output folder on request.
+same-origin check, so a malicious website cannot drive the app. Folders are
+chosen with an in-page folder browser (no native dialogs, no typing needed);
+the only thing that ever leaves the browser is "Show output folder".
+Settings persist to a small JSON file so the app reopens the way it was left.
 """
 
 from __future__ import annotations
@@ -13,19 +13,18 @@ from __future__ import annotations
 import html
 import io
 import json
+import os
 import platform
 import re
 import secrets
-import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from PIL import Image
 
@@ -34,8 +33,10 @@ from . import __version__, core
 STATIC = Path(__file__).resolve().parents[2] / "static"
 STATIC_FILES = {"style.css": "text/css", "icon.png": "image/png", "favicon.ico": "image/x-icon"}
 SESSION = secrets.token_urlsafe(24)
-MAX_TEXT_BYTES = 65536
+MAX_FORM_BYTES = 65536
 CROP = (480, 320)
+LIST_LIMIT = 400
+BUNDLES = {".app", ".photoslibrary", ".lrlibrary", ".lrcat", ".bundle", ".framework", ".pkg"}  # macOS packages posing as folders
 
 e = html.escape
 
@@ -46,7 +47,6 @@ class Job:
     settings: core.Settings
     files: list[Path]
     out_dir: Path
-    upload_dir: Path | None = None
     results: list[core.Result] = field(default_factory=list)
     finished: bool = False
     error: str | None = None
@@ -59,91 +59,18 @@ JOBS: dict[str, Job] = {}
 LOCK = threading.Lock()
 
 
-# ---------------------------------------------------------------- multipart (streamed, stdlib only)
+# ---------------------------------------------------------------- settings persistence
 
-DISPOSITION = re.compile(r'name="([^"]*)"(?:;\s*filename="([^"]*)")?')
+def config_dir() -> Path:
+    if env := os.environ.get("GOOSNAV_CONFIG_DIR"):
+        return Path(env)
+    home, system = Path.home(), platform.system()
+    if system == "Darwin":
+        return home / "Library" / "Application Support" / "Red Sun" / "config"
+    if system == "Windows":
+        return Path(os.environ.get("APPDATA", home)) / "Red Sun"
+    return Path(os.environ.get("XDG_CONFIG_HOME", home / ".config")) / "red-sun"
 
-
-def parse_multipart(stream, boundary: bytes, length: int, save_dir: Path) -> tuple[dict[str, str], list[Path]]:
-    """Stream a multipart/form-data body: text fields -> dict, file parts -> files under save_dir."""
-    fields: dict[str, str] = {}
-    files: list[Path] = []
-    delim = b"\r\n--" + boundary
-    buf = bytearray(b"\r\n")  # so the very first "--boundary" matches the CRLF-prefixed delimiter
-    remaining = length
-
-    def fill() -> bool:
-        nonlocal remaining
-        if remaining <= 0:
-            return False
-        chunk = stream.read(min(1 << 20, remaining))
-        if not chunk:
-            remaining = 0
-            return False
-        remaining -= len(chunk)
-        buf.extend(chunk)
-        return True
-
-    def find_delim() -> int:
-        """Index of a real delimiter (boundary followed by CRLF or --), -1 if none, -2 if undecidable yet."""
-        pos = 0
-        while (j := buf.find(delim, pos)) >= 0:
-            end = j + len(delim)
-            if len(buf) < end + 2:
-                return -2
-            if buf[end:end + 2] in (b"\r\n", b"--"):
-                return j
-            pos = j + 1
-        return -1
-
-    def consume_until_delim(sink, cap: int | None) -> None:
-        keep = len(delim) + 1  # a boundary (plus its 2-byte lookahead) may straddle two reads
-        while (j := find_delim()) < 0:
-            if j == -1 and len(buf) > keep:
-                sink.write(bytes(buf[:-keep]))
-                del buf[:-keep]
-            if cap is not None and sink.tell() > cap:
-                raise ValueError("form field too large")
-            if not fill():
-                raise ValueError("multipart part is unterminated")
-        sink.write(bytes(buf[:j]))
-        del buf[: j + len(delim)]
-        if cap is not None and sink.tell() > cap:
-            raise ValueError("form field too large")
-
-    consume_until_delim(io.BytesIO(), MAX_TEXT_BYTES)  # preamble (normally empty)
-    while True:
-        while len(buf) < 2 and fill():
-            pass
-        if buf.startswith(b"--"):
-            break
-        while (h := buf.find(b"\r\n\r\n")) < 0:
-            if len(buf) > MAX_TEXT_BYTES or not fill():
-                raise ValueError("multipart part headers are malformed")
-        headers = bytes(buf[2:h]).decode("utf-8", "replace")
-        del buf[: h + 4]
-        match = DISPOSITION.search(headers)
-        name, filename = (match.group(1), match.group(2)) if match else ("", None)
-        if filename:
-            safe = Path(filename.replace("\\", "/")).name or "upload"
-            target, k = save_dir / safe, 2
-            while target.exists():
-                target, k = save_dir / f"{Path(safe).stem}-{k}{Path(safe).suffix}", k + 1
-            with target.open("wb") as sink:
-                consume_until_delim(sink, None)
-            if target.stat().st_size:
-                files.append(target)
-            else:
-                target.unlink()
-        else:
-            sink = io.BytesIO()
-            consume_until_delim(sink, MAX_TEXT_BYTES)
-            if filename is None:  # filename="" is an empty <input type=file>, not a text field
-                fields[name] = sink.getvalue().decode("utf-8", "replace")
-    return fields, files
-
-
-# ---------------------------------------------------------------- form model
 
 def defaults() -> dict[str, str]:
     s = core.Settings()
@@ -152,6 +79,30 @@ def defaults() -> dict[str, str]:
         "dither": s.dither, "dither_strength": str(s.dither_strength), "sharpen": "on", "contrast": "on",
         "threshold": "", "matte": s.matte, "grid_width": "", "min_output_width": str(s.min_output_width), "fmt": s.fmt,
     }
+
+
+FORM_KEYS = set(defaults()) | {"recursive", "despeckle"}
+
+
+def load_fields() -> dict[str, str]:
+    """Last saved form, or the defaults."""
+    try:
+        saved = json.loads((config_dir() / "settings.json").read_text(encoding="utf-8"))
+        return {k: str(v) for k, v in saved.items() if k in FORM_KEYS}
+    except (OSError, ValueError):
+        return defaults()
+
+
+def save_fields(fields: dict[str, str]) -> None:
+    keep = {k: v for k, v in fields.items() if k in FORM_KEYS}
+    try:
+        directory = config_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        tmp = directory / "settings.json.tmp"
+        tmp.write_text(json.dumps(keep, indent=2), encoding="utf-8")
+        os.replace(tmp, directory / "settings.json")
+    except OSError as exc:  # settings are a convenience; never block processing on them
+        sys.stderr.write(f"settings not saved: {exc}\n")
 
 
 def settings_from(f: dict[str, str]) -> core.Settings:
@@ -172,6 +123,61 @@ def settings_from(f: dict[str, str]) -> core.Settings:
 
 def clean_path(text: str) -> Path:
     return Path(text.strip().strip('"\'')).expanduser()
+
+
+# ---------------------------------------------------------------- folder browser model
+
+def shortcuts() -> list[tuple[str, Path]]:
+    home = Path.home()
+    places = [("Home", home)] + [(n, home / n) for n in ("Desktop", "Pictures", "Documents", "Downloads")]
+    system = platform.system()
+    if system == "Darwin":
+        places += [(p.name, p) for p in sorted(Path("/Volumes").glob("*")) if p.is_dir()]
+    elif system == "Windows":
+        places += [(d.rstrip("\\"), Path(d)) for d in os.listdrives()] if hasattr(os, "listdrives") else []
+    else:
+        for base in (Path("/media") / os.environ.get("USER", ""), Path("/mnt")):
+            places += [(p.name, p) for p in sorted(base.glob("*")) if p.is_dir()]
+    return [(name, p) for name, p in places if p.is_dir()]
+
+
+def start_dir(fields: dict[str, str]) -> Path:
+    for key in ("path", "out_dir"):
+        if fields.get(key, "").strip():
+            candidate = core.source_folder(clean_path(fields[key]))
+            if candidate.is_dir():
+                return candidate
+    pictures = Path.home() / "Pictures"
+    return pictures if pictures.is_dir() else Path.home()
+
+
+@dataclass
+class Listing:
+    folders: list[Path]
+    images: list[Path]
+    more: int
+    problem: str | None = None
+
+
+def list_folder(directory: Path) -> Listing:
+    folders, images, more = [], [], 0
+    try:
+        entries = sorted(directory.iterdir(), key=lambda p: p.name.lower())
+    except PermissionError:
+        return Listing([], [], 0, "This folder cannot be read. On macOS, allow Red Sun under System Settings → Privacy & Security → Files and Folders.")
+    except OSError as exc:
+        return Listing([], [], 0, f"Cannot read this folder: {exc}")
+    for p in entries:
+        if p.name.startswith(".") or p.suffix.lower() in BUNDLES:
+            continue
+        if p.is_dir():
+            folders.append(p)
+        elif core.is_image(p):
+            images.append(p)
+    if len(folders) + len(images) > LIST_LIMIT:
+        more = len(folders) + len(images) - LIST_LIMIT
+        folders, images = folders[:LIST_LIMIT], images[: max(0, LIST_LIMIT - len(folders))]
+    return Listing(folders, images, more)
 
 
 # ---------------------------------------------------------------- rendering
@@ -199,7 +205,7 @@ def page(title: str, body: str, refresh: int | None = None) -> str:
 </main>
 <hr>
 <footer>
-<p>Red Sun {e(__version__)}. Each run is saved to a new numbered folder under <code>{e(str(core.exports_root()))}</code> unless you choose another. Original files are never modified.</p>
+<p>Red Sun {e(__version__)}. Results go into a new numbered <code>red-sun-run-NNN</code> folder right next to your pictures unless you choose another folder. Original files are never modified. Your settings are remembered between sessions.</p>
 <form method="post" action="/quit">
 <input type="hidden" name="session" value="{SESSION}">
 <button>Quit Red Sun</button>
@@ -219,29 +225,40 @@ def checked(f: dict[str, str], name: str) -> str:
     return " checked" if name in f else ""
 
 
+def browse_url(directory: Path, kind: str) -> str:
+    return "/browse?" + urlencode({"dir": str(directory), "for": kind})
+
+
+def describe_source(text: str) -> str:
+    if not text.strip():
+        return "Nothing selected yet."
+    path = clean_path(text)
+    if path.is_file():
+        return f"One image: {e(path.name)}. Results go to a new folder next to it."
+    if path.is_dir():
+        count = len(core.collect_files(path))
+        return f"{count} image{'s' if count != 1 else ''} in this folder (subfolders not counted). Results go to <code>{e(str(core.next_run_dir(path)))}</code>."
+    return "This path does not exist."
+
+
 def render_form(f: dict[str, str], problem: str | None = None) -> str:
     alert = f"<p><strong>Problem:</strong> {e(problem)}</p>" if problem else ""
-    next_run = core.next_run_dir()
     body = f"""
 {alert}
-<form method="post" action="/jobs" enctype="multipart/form-data">
+<form method="post" action="/jobs">
 <input type="hidden" name="session" value="{SESSION}">
+<button hidden tabindex="-1">Process</button>
+<!-- first submit button = what Enter does; keeps Enter from triggering Browse -->
 
 <fieldset>
 <legend>Source</legend>
 <p>
-<label for="files">Choose images</label><br>
-<input id="files" name="files" type="file" multiple accept=".png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp,.gif,image/*">
+<label for="path">Folder (or one image) to process</label><br>
+<input id="path" name="path" type="text" size="60" value="{e(f.get('path', ''))}" placeholder="Click Browse…">
+<button formaction="/browse" name="for" value="source">Browse…</button>
 </p>
-<p>
-<label for="folder">Or choose a whole folder</label><br>
-<input id="folder" name="folder" type="file" webkitdirectory multiple>
-</p>
-<p>
-<label for="path">Or type a file or folder path (fastest for big folders)</label><br>
-<input id="path" name="path" type="text" size="60" value="{e(f.get('path', ''))}" placeholder="/Users/you/Pictures/scans">
-<label><input type="checkbox" name="recursive"{checked(f, 'recursive')}> include subfolders</label>
-</p>
+<p>{describe_source(f.get('path', ''))}</p>
+<p><label><input type="checkbox" name="recursive"{checked(f, 'recursive')}> Include subfolders (earlier run folders are skipped)</label></p>
 </fieldset>
 
 <fieldset>
@@ -322,16 +339,54 @@ def render_form(f: dict[str, str], problem: str | None = None) -> str:
 <fieldset>
 <legend>Output</legend>
 <p>
-<label for="out_dir">Output folder</label><br>
-<input id="out_dir" name="out_dir" type="text" size="60" value="{e(f.get('out_dir', ''))}" placeholder="{e(str(next_run))}">
-<small>Blank = the next numbered run folder, shown above.</small>
+<label for="out_dir">Output folder (optional)</label><br>
+<input id="out_dir" name="out_dir" type="text" size="60" value="{e(f.get('out_dir', ''))}" placeholder="a new red-sun-run-NNN folder next to your pictures">
+<button formaction="/browse" name="for" value="out">Browse…</button>
 </p>
+<p><small>Leave blank to get a new numbered folder inside the folder you are processing.</small></p>
 </fieldset>
 
 <p><button>Process</button></p>
 </form>
 """
     return page("Red Sun", body)
+
+
+def render_browse(directory: Path, kind: str) -> str:
+    listing = list_folder(directory)
+    title = "Choose an output folder" if kind == "out" else "Choose a folder of images"
+    param = "out" if kind == "out" else "path"
+    places = " · ".join(f'<a href="{browse_url(p, kind)}">{e(name)}</a>' for name, p in shortcuts())
+    crumbs, trail = [], Path(directory.anchor)
+    root_link = f'<a href="{browse_url(trail, kind)}">{e(directory.anchor)}</a>'
+    for part in directory.parts[1:]:
+        trail = trail / part
+        crumbs.append(f'<a href="{browse_url(trail, kind)}">{e(part)}</a>')
+    count = len(listing.images)
+    here = f"{count} image{'s' if count != 1 else ''} here" if kind != "out" else "results will be written here"
+    problem = f"<p><strong>Problem:</strong> {e(listing.problem)}</p>" if listing.problem else ""
+    folders = "".join(f'<li><a href="{browse_url(p, kind)}">{e(p.name)}/</a></li>' for p in listing.folders) or "<li>No subfolders.</li>"
+    images = ""
+    if kind != "out":
+        items = "".join(f'<li><a href="/?{urlencode({"path": str(p)})}">{e(p.name)}</a></li>' for p in listing.images)
+        images = f"<h3>Images (click one to process only that image)</h3><ul>{items or '<li>No images here.</li>'}</ul>"
+    more = f"<p>…and {listing.more} more entries not shown.</p>" if listing.more else ""
+    body = f"""
+<h2>{title}</h2>
+<p>{places}</p>
+<p>{root_link} {' / '.join(crumbs)}</p>
+{problem}
+<form method="get" action="/">
+<input type="hidden" name="{param}" value="{e(str(directory))}">
+<button>Use this folder</button> <small>{here}</small>
+</form>
+<h3>Folders</h3>
+<ul>{folders}</ul>
+{images}
+{more}
+<p><a href="/">Cancel</a></p>
+"""
+    return page(f"Red Sun — {title}", body)
 
 
 def render_job(job: Job) -> str:
@@ -376,11 +431,11 @@ def render_job(job: Job) -> str:
         )
         figures = f"<h2>Results</h2><p>Each detail below is an unscaled 1:1 crop of the saved file.</p>{figures}" if figures else ""
     actions = f"""
-<p><a href="/">Process more images</a></p>
 <form method="post" action="/jobs/{job.id}/reveal">
 <input type="hidden" name="session" value="{SESSION}">
 <button>Show output folder</button>
-</form>""" if job.finished else ""
+</form>
+<p><a href="/">Process more images</a></p>""" if job.finished else ""
     return page("Red Sun — batch", f"{status}{progress}{table}{actions}{figures}", refresh=None if job.finished else 2)
 
 
@@ -397,17 +452,9 @@ Zoom the browser (⌘+ or Ctrl+) to inspect the pixel boundaries. <a href="/jobs
 
 # ---------------------------------------------------------------- job runner
 
-def start_job(settings: core.Settings, files: list[Path], out_dir: Path | None, upload_dir: Path | None) -> Job:
+def start_job(settings: core.Settings, files: list[Path], out_dir: Path) -> Job:
     with LOCK:
-        if out_dir is None:
-            while True:  # numbered run folder; the mkdir is the race guard
-                out_dir = core.next_run_dir()
-                try:
-                    out_dir.mkdir(parents=True, exist_ok=False)
-                    break
-                except FileExistsError:
-                    continue
-        job = Job(id=secrets.token_hex(6), settings=settings, files=files, out_dir=out_dir, upload_dir=upload_dir)
+        job = Job(id=secrets.token_hex(6), settings=settings, files=files, out_dir=out_dir)
         JOBS[job.id] = job
 
     def work() -> None:
@@ -417,11 +464,22 @@ def start_job(settings: core.Settings, files: list[Path], out_dir: Path | None, 
             job.error = f"{type(exc).__name__}: {exc}"
         finally:
             job.finished = True
-            if upload_dir:
-                shutil.rmtree(upload_dir, ignore_errors=True)
 
     threading.Thread(target=work, name=f"job-{job.id}", daemon=True).start()
     return job
+
+
+def create_run_dir(source: Path) -> Path:
+    """A fresh red-sun-run-NNN next to the source; the exclusive mkdir is the race guard."""
+    root = core.source_folder(source)
+    with LOCK:
+        while True:
+            candidate = core.next_run_dir(root)
+            try:
+                candidate.mkdir(parents=False, exist_ok=False)
+                return candidate
+            except FileExistsError:
+                continue
 
 
 def crop_png(path: Path) -> bytes:
@@ -469,25 +527,12 @@ class Handler(BaseHTTPRequestHandler):
     def redirect(self, location: str) -> None:
         self.send(303, b"", "text/plain", {"Location": location})
 
-    def form(self) -> tuple[dict[str, str], list[Path], Path | None]:
-        """Returns (fields, uploaded files, upload dir or None). Multipart bodies stream to a temp dir."""
+    def form(self) -> dict[str, str]:
         length = int(self.headers.get("Content-Length") or 0)
-        ctype = self.headers.get("Content-Type", "")
-        if ctype.startswith("multipart/form-data"):
-            match = re.search(r'boundary="?([^";]+)"?', ctype)
-            if not match:
-                raise ValueError("multipart boundary missing")
-            upload_dir = Path(tempfile.mkdtemp(prefix="red-sun-upload-"))
-            try:
-                fields, files = parse_multipart(self.rfile, match.group(1).encode(), length, upload_dir)
-            except Exception:
-                shutil.rmtree(upload_dir, ignore_errors=True)
-                raise
-            return fields, files, upload_dir
-        if length > MAX_TEXT_BYTES:
+        if length > MAX_FORM_BYTES:
             raise ValueError("form too large")
         raw = self.rfile.read(length).decode("utf-8", "replace")
-        return {k: v[-1] for k, v in parse_qs(raw, keep_blank_values=True).items()}, [], None
+        return {k: v[-1] for k, v in parse_qs(raw, keep_blank_values=True).items()}
 
     def authorized(self, fields: dict[str, str]) -> bool:
         if not secrets.compare_digest(fields.get("session", ""), SESSION):
@@ -506,8 +551,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         url = urlsplit(self.path)
         path = url.path
+        query = {k: v[-1] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
         if path == "/":
-            return self.html(render_form(defaults()))
+            fields = load_fields()
+            if "path" in query or "out" in query:  # returning from the folder browser
+                fields["path"] = query.get("path", fields.get("path", ""))
+                fields["out_dir"] = query.get("out", fields.get("out_dir", ""))
+                save_fields(fields)
+            return self.html(render_form(fields))
+        if path == "/browse":
+            kind = "out" if query.get("for") == "out" else "source"
+            directory = clean_path(query["dir"]) if query.get("dir") else start_dir(load_fields())
+            if not directory.is_dir():
+                directory = Path.home()
+            return self.html(render_browse(directory.resolve(), kind))
         if path == "/health/ready":
             return self.send(200, json.dumps({"status": "ready", "version": __version__}).encode(), "application/json")
         if path == "/favicon.ico":
@@ -545,18 +602,21 @@ class Handler(BaseHTTPRequestHandler):
     # -- POST
     def do_POST(self) -> None:
         try:
-            fields, uploads, upload_dir = self.form()
+            fields = self.form()
         except ValueError as exc:
             return self.text(400, str(exc))
         if not self.authorized(fields):
-            if upload_dir:
-                shutil.rmtree(upload_dir, ignore_errors=True)
             return self.text(403, "Forbidden: actions must come from the Red Sun page open in this browser.")
         path = urlsplit(self.path).path
+        if path == "/browse":  # remember the form as it is, then open the folder browser
+            save_fields(fields)
+            kind = "out" if fields.get("for") == "out" else "source"
+            key = "out_dir" if kind == "out" else "path"
+            chosen = clean_path(fields[key]) if fields.get(key, "").strip() else None
+            directory = core.source_folder(chosen) if chosen and chosen.exists() else start_dir(fields)
+            return self.redirect(browse_url(directory, kind))
         if path == "/jobs":
-            return self.create_job(fields, uploads, upload_dir)
-        if upload_dir:
-            shutil.rmtree(upload_dir, ignore_errors=True)
+            return self.create_job(fields)
         if m := re.fullmatch(r"/jobs/([0-9a-f]{12})/reveal", path):
             job = self.job(m.group(1))
             if not job:
@@ -569,28 +629,30 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.text(404, "Not found.")
 
-    def create_job(self, fields: dict[str, str], uploads: list[Path], upload_dir: Path | None) -> None:
-        def fail(message: str) -> None:
-            if upload_dir:
-                shutil.rmtree(upload_dir, ignore_errors=True)
-            self.html(render_form(fields, message), 400)
-
+    def create_job(self, fields: dict[str, str]) -> None:
+        save_fields(fields)
         try:
             settings = settings_from(fields)
         except ValueError as exc:
-            return fail(str(exc))
-        files = [p for p in uploads if p.suffix.lower() in core.SUPPORTED and not p.name.startswith(".")]
-        typed = fields.get("path", "").strip()
-        if typed:
-            source = clean_path(typed)
-            if not source.exists():
-                return fail(f"Nothing exists at {source}")
-            files += core.collect_files(source, recursive="recursive" in fields)
+            return self.html(render_form(fields, str(exc)), 400)
+        if not fields.get("path", "").strip():
+            return self.html(render_form(fields, "Click Browse… and choose a folder of images first."), 400)
+        source = clean_path(fields["path"])
+        if not source.exists():
+            return self.html(render_form(fields, f"Nothing exists at {source}. Click Browse… to choose again."), 400)
+        files = core.collect_files(source, recursive="recursive" in fields)
         if not files:
             kinds = ", ".join(sorted(core.SUPPORTED))
-            return fail(f"Choose images, a folder, or type a path first (supported: {kinds}).")
-        out_dir = clean_path(fields["out_dir"]) if fields.get("out_dir", "").strip() else None
-        job = start_job(settings, files, out_dir, upload_dir)
+            return self.html(render_form(fields, f"No supported images found there (supported: {kinds})."), 400)
+        try:
+            if fields.get("out_dir", "").strip():
+                out_dir = clean_path(fields["out_dir"])
+                out_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                out_dir = create_run_dir(source)
+        except OSError as exc:
+            return self.html(render_form(fields, f"Cannot create the output folder ({exc}). Choose an output folder you can write to."), 400)
+        job = start_job(settings, files, out_dir)
         self.redirect(f"/jobs/{job.id}")
 
     def log_message(self, fmt: str, *args) -> None:  # keep launcher logs readable, one line per request

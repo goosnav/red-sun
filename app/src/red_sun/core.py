@@ -256,22 +256,33 @@ def process(img: Image.Image, s: Settings) -> Processed:
 
 # ---------------------------------------------------------------- files and runs
 
+def is_image(p: Path) -> bool:
+    return p.is_file() and p.suffix.lower() in SUPPORTED and not p.name.startswith(".")
+
+
 def collect_files(path: Path, recursive: bool = False) -> list[Path]:
+    """Images in a folder (or the single file). Recursive walks skip hidden folders and earlier run folders."""
     if path.is_file():
         return [path] if path.suffix.lower() in SUPPORTED else []
-    walk = path.rglob("*") if recursive else path.iterdir()
-    return sorted(p for p in walk if p.is_file() and p.suffix.lower() in SUPPORTED and not p.name.startswith("."))
+    if not recursive:
+        return sorted(p for p in path.iterdir() if is_image(p))
+    found = []
+    for p in path.rglob("*"):
+        parts = p.relative_to(path).parts[:-1]
+        if any(part.startswith(".") or RUN_RE.match(part) for part in parts):
+            continue
+        if is_image(p):
+            found.append(p)
+    return sorted(found)
 
 
-def exports_root() -> Path:
-    pictures = Path.home() / "Pictures"
-    return (pictures if pictures.is_dir() else Path.home()) / "Red Sun"
+def source_folder(path: Path) -> Path:
+    return path.parent if path.is_file() else path
 
 
-def next_run_dir(root: Path | None = None) -> Path:
-    """red-sun-run-001, -002, ... under the exports root (not created here)."""
-    root = root or exports_root()
-    numbers = [int(m.group(1)) for p in root.glob("red-sun-run-*") if (m := RUN_RE.match(p.name))]
+def next_run_dir(root: Path) -> Path:
+    """red-sun-run-001, -002, ... inside root (not created here)."""
+    numbers = [int(m.group(1)) for p in root.glob("red-sun-run-*") if p.is_dir() and (m := RUN_RE.match(p.name))]
     return root / f"red-sun-run-{max(numbers, default=0) + 1:03d}"
 
 

@@ -10,9 +10,11 @@ Red Sun does what Photoshop's *Image → Mode → Indexed Color* and *Bitmap (50
 - **Classic dithering, or none.** Diffusion (Floyd–Steinberg), ordered 8×8 pattern, or noise, with a strength knob. Off by default for flat, rigid regions.
 - **Sharpen before the snap.** An unsharp mask ahead of quantization shortens soft edges into single hard steps.
 - **Poster sized.** Sources smaller than your minimum width (default 3200 px) are multiplied up by a whole number. Larger sources keep every pixel. The files stay small because they are indexed.
-- **Numbered runs.** Every batch lands in a new `red-sun-run-001`, `-002`, … folder under `~/Pictures/Red Sun` with a `settings.json` beside the outputs, unless you choose another folder.
-- **Batch.** Pick files or a whole folder in the browser, or type a path for big folders. One bad file never stops the rest. Originals are never modified.
-- **A GUI that looks like 1999 on purpose.** Plain HTML forms, zero JavaScript, no native dialogs. Also a CLI with the same options.
+- **Results next to your pictures.** Every batch lands in a new `red-sun-run-001`, `-002`, … folder inside the folder you processed, with a `settings.json` beside the outputs. No hunting through app folders. Choose another output folder if you prefer.
+- **Browse, don't type.** A folder browser inside the page (Home, Desktop, Pictures, drives, breadcrumbs, image counts) picks the folder or a single image. No native dialogs, no paths to type.
+- **Remembers you.** Every setting and the last folder persist between sessions.
+- **Batch.** One bad file never stops the rest; recursive scans skip earlier run folders. Originals are never modified.
+- **A GUI that looks like 1999 on purpose.** Plain HTML forms, zero JavaScript. Also a CLI with the same options.
 
 | Source (1:1 crop) | Red Sun, adaptive 12 colours, no dither (same 1:1 crop) |
 |---|---|
@@ -55,7 +57,7 @@ Your browser opens at `http://127.0.0.1:<port>`. Quit from the page footer or wi
 ### Option C: command line
 
 ```bash
-PYTHONPATH=app/src uv run --project app python -m red_sun ./scans --colors 12
+PYTHONPATH=app/src uv run --project app python -m red_sun ./scans --colors 12          # -> ./scans/red-sun-run-001/
 PYTHONPATH=app/src uv run --project app python -m red_sun comic.tif --mode bw --threshold 128 --dither pattern --dither-strength 100
 ```
 
@@ -84,13 +86,13 @@ python -m red_sun <file-or-folder>
 | Minimum output width | 3200 | Results narrower than this are multiplied by a whole number with nearest neighbour. 0 = never. |
 | Format | PNG | Indexed PNG, indexed BMP, GIF, or all three. |
 
-Output names: `<name>_redsun_16c.png`, `<name>_redsun_paint28.png`, `<name>_redsun_web216-pattern.png`, `<name>_redsun_bw-diffusion.png`, and so on. Duplicate names inside one batch get `-2`, `-3`.
+Output location: `<folder you processed>/red-sun-run-NNN/` (for a single image, next to that image). Output names: `<name>_redsun_16c.png`, `<name>_redsun_paint28.png`, `<name>_redsun_web216-pattern.png`, `<name>_redsun_bw-diffusion.png`, and so on. Duplicate names inside one batch get `-2`, `-3`.
 
 ## Develop
 
 ```bash
 uv run --project app --group dev pytest        # unit tests (tests/test_core.py, tests/test_server.py)
-uv run --project app python tests/smoke.py     # real HTTP end-to-end smoke, including multipart uploads
+uv run --project app python tests/smoke.py     # real HTTP end-to-end smoke (browser page, batch, persistence)
 python3 packaging/build_release.py             # icons, uv tools, launcher images, ZIP (see below)
 ```
 

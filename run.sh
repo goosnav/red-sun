@@ -4,6 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 export PYTHONPATH="$PWD/app/src"
+# A double-clicked run.command gets a minimal PATH; make sure the usual uv/python locations are visible.
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 if command -v uv >/dev/null 2>&1; then
   exec uv run --project app --no-dev python -m red_sun.start "$@"
 fi
