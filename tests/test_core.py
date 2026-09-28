@@ -272,3 +272,16 @@ def test_black_and_white_images_use_their_own_look(tmp_path: Path):
     s.bw_dither_strength = 100
     assert core.process(Image.new("L", (64, 64), 128), s).colors == 2               # now the B&W side dithers
     assert core.Settings(bw_dither="pattern").tag("bw") == "bw-pattern"
+
+
+def test_dotted_file_names_never_overwrite_each_other(tmp_path: Path):
+    """Regression: "08.30.2025 Comic 11.tiff" once saved as "08.30.png", so a folder collapsed to one output."""
+    src = tmp_path / "scans"
+    src.mkdir()
+    for name in ("08.30.2025 Comic 11.tiff", "08.30.2025 Comic 12.tiff", "08.30.2025 Comic 17.tif", "08.30.2025 Comic 17.tiff"):
+        Image.new("L", (40, 30), 90).save(src / name)
+    results = core.run_batch(core.collect_files(src), tmp_path / "out", core.Settings(min_output_width=0, fmt="all"))
+    names = sorted(p.name for r in results for p in r.outputs)
+    assert len(names) == len(set(names)) == 12
+    assert "08.30.2025 Comic 11_redsun_bw.png" in names and "08.30.2025 Comic 17_redsun_bw-2.bmp" in names
+    assert len(list((tmp_path / "out").glob("*.png"))) == 4

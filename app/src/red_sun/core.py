@@ -469,7 +469,7 @@ def next_run_dir(root: Path) -> Path:
 def save(result: Image.Image, stem: Path, fmt: str) -> list[Path]:
     outputs = []
     for ext in EXTENSIONS[fmt]:
-        out = stem.with_suffix(ext)
+        out = stem.with_name(stem.name + ext)  # not with_suffix: "08.30.2025 Comic 11" would become "08.30.png"
         if ext == ".gif" and result.mode == "1":
             result.convert("L").convert("P", palette=Image.Palette.ADAPTIVE, colors=2).save(out, "GIF")
         else:
