@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-output-width", type=int, default=3200, help="nearest-neighbour multiply until at least this wide (default 3200; 0 = never)")
     p.add_argument("--format", choices=core.FORMATS, default="png")
     p.add_argument("--recursive", action="store_true", help="include subfolders")
-    p.add_argument("--out", type=Path, help="output folder (default: a new red-sun-run-NNN folder inside the input folder)")
+    p.add_argument("--out", type=Path, help="output folder; subfolders are mirrored inside it (default: a new red-sun-run-NNN inside each folder that has images)")
     a = p.parse_args(argv)
 
     if a.input is None:
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     files = core.collect_files(a.input, recursive=a.recursive)
     if not files:
         p.exit(1, "No supported images found.\n")
-    out_dir = a.out or core.next_run_dir(core.source_folder(a.input))
+    out_dirs = core.output_dirs(files, core.source_folder(a.input), a.out)
 
     def report(i: int, n: int, r: core.Result) -> None:
         if r.error:
@@ -57,9 +57,11 @@ def main(argv: list[str] | None = None) -> int:
             scale = f" x{r.factor}" if r.factor > 1 else ""
             print(f"[{i}/{n}] {r.source.name} -> {', '.join(o.name for o in r.outputs)} [{r.mode}, {r.width}x{r.height}{scale}, {r.colors} colors]")
 
-    results = core.run_batch(files, out_dir, settings, progress=report)
+    results = core.run_batch(files, out_dirs, settings, progress=report)
     failed = sum(1 for r in results if r.error)
-    print(f"Done: {len(results) - failed} saved to {out_dir}" + (f", {failed} failed" if failed else ""))
+    print(f"Done: {len(results) - failed} saved" + (f", {failed} failed" if failed else "") + ":")
+    for d in sorted(set(out_dirs.values())):
+        print(f"  {d}")
     return 1 if failed == len(results) else 0
 
 

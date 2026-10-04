@@ -9,7 +9,7 @@ Red Sun does what Photoshop's *Image → Mode → Indexed Color* and *Bitmap (50
 - **Flat buckets.** The default palette is the image's *own* colours: only pixels inside flat regions (or one-pixel strokes) get a vote, near-identical shades merge, edge blends never earn a bucket, and black and white are forced in when present. Every pixel then snaps to the nearest bucket: either / or. Also adaptive median cut (photos), classic MS Paint 28, Windows 16, web-safe 216, and pure black & white with automatic (Otsu) or fixed 50% threshold.
 - **Classic dithering, or none.** Diffusion (Floyd–Steinberg), ordered 8×8 pattern, or noise, with a strength knob. Off by default for flat, rigid regions.
 - **Poster sized.** Sources smaller than your minimum width (default 3200 px) are multiplied up by a whole number. Larger sources keep every pixel. The files stay small because they are indexed.
-- **Results next to your pictures.** Every batch lands in a new `red-sun-run-001`, `-002`, … folder inside the folder you processed, with a `settings.json` beside the outputs. No hunting through app folders. Choose another output folder if you prefer.
+- **Results next to your pictures.** Every batch lands in a new `red-sun-run-001`, `-002`, … folder inside the folder you processed, with a `settings.json` beside the outputs. With subfolders included, every subfolder that has images gets its own run folder. No hunting through app folders. Choose another output folder if you prefer.
 - **Choose folder… opens your system's own folder dialog** (the standard macOS / Windows panel), so no paths to type. Pick the folder with your pictures, or a single image.
 - **Remembers you.** Every setting and the last folder persist between sessions.
 - **Batch.** One bad file never stops the rest; recursive scans skip earlier run folders. Originals are never modified.
@@ -89,7 +89,7 @@ Colour images and black-and-white images each have their own look. In Auto mode 
 | Minimum output width | 3200 | Results narrower than this are multiplied by a whole number with nearest neighbour. 0 = never. |
 | Format | PNG | Indexed PNG, indexed BMP, GIF, or all three. |
 
-Output location: `<folder you processed>/red-sun-run-NNN/` (for a single image, next to that image). Output names: `<name>_redsun_flat16.png`, `<name>_redsun_16c.png` (adaptive), `<name>_redsun_paint28.png`, `<name>_redsun_web216-pattern.png`, `<name>_redsun_bw-diffusion.png`, and so on. Duplicate names inside one batch get `-2`, `-3`.
+Output location: `<each folder with images>/red-sun-run-NNN/`, numbered per folder (for a single image, next to that image). A chosen output folder gets the same subfolder tree recreated inside it. Output names: `<name>_redsun_flat16.png`, `<name>_redsun_16c.png` (adaptive), `<name>_redsun_paint28.png`, `<name>_redsun_web216-pattern.png`, `<name>_redsun_bw-diffusion.png`, and so on. Duplicate names inside one batch get `-2`, `-3`.
 
 ## Develop
 

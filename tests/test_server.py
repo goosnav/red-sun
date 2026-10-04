@@ -81,8 +81,8 @@ def test_run_dir_is_created_next_to_the_source(tmp_path):
     photos = tmp_path / "photos"
     photos.mkdir()
     Image.new("RGB", (8, 8)).save(photos / "a.png")
-    first = server.create_run_dir(photos)
-    second = server.create_run_dir(photos / "a.png")           # a single image: next to that image
+    first = core.create_run_dir(photos)
+    second = core.create_run_dir(core.source_folder(photos / "a.png"))   # a single image: next to that image
     assert first == photos / "red-sun-run-001" and second == photos / "red-sun-run-002"
     assert first.is_dir() and second.is_dir()
     # a recursive scan of the photos folder must not pick up outputs from earlier runs

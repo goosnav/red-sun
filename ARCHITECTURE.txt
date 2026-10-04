@@ -16,7 +16,7 @@ One shared core, two thin surfaces, one launcher contract.
         GET  /                    the form (restored from config/settings.json)
         POST /choose              save the form, show the OS folder/file dialog (osascript / PowerShell /
                                   zenity), save the answer, 303 back to the form
-        POST /jobs                save the form, validate, create <source>/red-sun-run-NNN, start the batch thread
+        POST /jobs                save the form, validate, core.output_dirs: a red-sun-run-NNN inside every folder that has images, start the batch thread
         GET  /jobs/<id>           progress (<meta refresh> + <progress>) or results
         GET  /jobs/<id>/out/n     one output file; ?crop=1 = unscaled 1:1 centre crop
         GET  /jobs/<id>/view/n    the file at natural size with nearest-neighbour rendering
@@ -73,7 +73,8 @@ SECURITY MODEL (local app)
 
 DATA LOCATIONS
 --------------
-    Outputs:          <folder you processed>/red-sun-run-NNN/ (+ settings.json), or the chosen output folder / --out
+    Outputs:          <each folder with images>/red-sun-run-NNN/ (+ settings.json), numbered per folder; or the chosen
+                      output folder / --out with the subfolder tree mirrored inside it
     Settings:         GOOSNAV_CONFIG_DIR/settings.json under the launcher; otherwise ~/Library/Application Support/Red Sun/config,
                       %APPDATA%\Red Sun, or $XDG_CONFIG_HOME/red-sun
     Launcher runtime: macOS ~/Library/Application Support/Red Sun, Windows %LOCALAPPDATA%\Red Sun,

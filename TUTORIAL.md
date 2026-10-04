@@ -18,7 +18,7 @@ or `.\run.ps1` on Windows. Uses `uv` if you have it (recommended; exact locked v
 2. Select the folder with your pictures and click **Choose**. To process a single picture instead, click **Choose one image…** and pick it.
 3. You are back on the form with the folder filled in and a line telling you how many images it holds and exactly where the results will go.
 
-Tick **Include subfolders** to process the whole tree. Earlier `red-sun-run-…` folders are skipped automatically, so re-running never re-processes old results.
+Tick **Include subfolders** to process the whole tree; each subfolder's results go into its own `red-sun-run-…` folder inside that subfolder. Earlier `red-sun-run-…` folders are skipped automatically, so re-running never re-processes old results.
 
 ## 3. Process
 
@@ -28,7 +28,7 @@ When it says **Finished**, the table lists each output, its size and colour coun
 
 ## 4. Where the results go
 
-Right next to your pictures: `red-sun-run-001` inside the folder you processed, then `-002`, and so on, each with a `settings.json` recording exactly what produced it. For a single image the run folder is created beside that image. To send results somewhere else, click **Choose…** next to **Output folder** and pick a folder; it is used as-is.
+Right next to your pictures: `red-sun-run-001` inside the folder you processed, then `-002`, and so on, each with a `settings.json` recording exactly what produced it. With **Include subfolders**, every subfolder that has images gets its own run folder, numbered independently. For a single image the run folder is created beside that image. To send results somewhere else, click **Choose…** next to **Output folder** and pick a folder; the subfolder structure is recreated inside it.
 
 Everything you set on the form, including the last folder, is remembered the next time you open Red Sun.
 

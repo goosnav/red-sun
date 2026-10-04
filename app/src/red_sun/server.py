@@ -46,7 +46,8 @@ class Job:
     id: str
     settings: core.Settings
     files: list[Path]
-    out_dir: Path
+    out_dirs: dict[Path, Path]   # source folder -> its output folder
+    root: Path                   # the folder (or image's folder) the user chose
     results: list[core.Result] = field(default_factory=list)
     finished: bool = False
     error: str | None = None
@@ -251,7 +252,8 @@ def describe_source(text: str) -> str:
         return f"One image: {e(path.name)}. Results go to a new folder next to it."
     if path.is_dir():
         count = len(core.collect_files(path))
-        return f"{count} image{'s' if count != 1 else ''} in this folder (subfolders not counted). Results go to <code>{e(str(core.next_run_dir(path)))}</code>."
+        return (f"{count} image{'s' if count != 1 else ''} in this folder (subfolders not counted). Results go to "
+                f"<code>{e(str(core.next_run_dir(path)))}</code>; with subfolders included, each subfolder with images gets its own red-sun-run folder.")
     return "This path does not exist."
 
 
@@ -380,10 +382,10 @@ def render_form(f: dict[str, str], problem: str | None = None) -> str:
 <legend>Output</legend>
 <p>
 <label for="out_dir">Output folder (optional)</label><br>
-<input id="out_dir" name="out_dir" type="text" size="60" value="{e(f.get('out_dir', ''))}" placeholder="a new red-sun-run-NNN folder next to your pictures">
+<input id="out_dir" name="out_dir" type="text" size="60" value="{e(f.get('out_dir', ''))}" placeholder="a new red-sun-run-NNN folder inside each folder of pictures">
 <button formaction="/choose" name="for" value="out">Choose…</button>
 </p>
-<p><small>Leave blank to get a new numbered folder inside the folder you are processing.</small></p>
+<p><small>Leave blank to get a new numbered folder inside each folder that has images. If you choose a folder, the subfolder structure is recreated inside it.</small></p>
 </fieldset>
 
 <p><button>Process</button></p>
@@ -417,7 +419,13 @@ def render_job(job: Job) -> str:
     if job.error:
         status = f"<p><strong>Problem:</strong> {e(job.error)}</p>"
     elif job.finished:
-        status = (f"<p><strong>Finished.</strong> {done - failed} of {total} images saved to <code>{e(str(job.out_dir))}</code>."
+        where = sorted(set(job.out_dirs.values()))
+        if len(where) == 1:
+            dest = f"saved to <code>{e(str(where[0]))}</code>"
+        else:
+            items = "".join(f"<li><code>{e(str(d))}</code></li>" for d in where)
+            dest = f"saved into {len(where)} output folders, one inside each folder that had images:</p><ul>{items}</ul><p>"
+        status = (f"<p><strong>Finished.</strong> {done - failed} of {total} images {dest}"
                   + (f" {failed} failed." if failed else "") + "</p>")
     else:
         status = f"<p>Processing {done} of {total}… this page refreshes itself.</p>"
@@ -455,14 +463,14 @@ Zoom the browser (⌘+ or Ctrl+) to inspect the pixel boundaries. <a href="/jobs
 
 # ---------------------------------------------------------------- job runner
 
-def start_job(settings: core.Settings, files: list[Path], out_dir: Path) -> Job:
+def start_job(settings: core.Settings, files: list[Path], out_dirs: dict[Path, Path], root: Path) -> Job:
     with LOCK:
-        job = Job(id=secrets.token_hex(6), settings=settings, files=files, out_dir=out_dir)
+        job = Job(id=secrets.token_hex(6), settings=settings, files=files, out_dirs=out_dirs, root=root)
         JOBS[job.id] = job
 
     def work() -> None:
         try:
-            core.run_batch(files, out_dir, settings, progress=lambda i, n, r: job.results.append(r))
+            core.run_batch(files, out_dirs, settings, progress=lambda i, n, r: job.results.append(r))
         except Exception as exc:  # noqa: BLE001
             job.error = f"{type(exc).__name__}: {exc}"
         finally:
@@ -470,19 +478,6 @@ def start_job(settings: core.Settings, files: list[Path], out_dir: Path) -> Job:
 
     threading.Thread(target=work, name=f"job-{job.id}", daemon=True).start()
     return job
-
-
-def create_run_dir(source: Path) -> Path:
-    """A fresh red-sun-run-NNN next to the source; the exclusive mkdir is the race guard."""
-    root = core.source_folder(source)
-    with LOCK:
-        while True:
-            candidate = core.next_run_dir(root)
-            try:
-                candidate.mkdir(parents=False, exist_ok=False)
-                return candidate
-            except FileExistsError:
-                continue
 
 
 def crop_png(path: Path) -> bytes:
@@ -616,7 +611,8 @@ class Handler(BaseHTTPRequestHandler):
             job = self.job(m.group(1))
             if not job:
                 return self.text(404, "No such batch.")
-            reveal(job.out_dir)
+            where = set(job.out_dirs.values())
+            reveal(where.pop() if len(where) == 1 else job.root)
             return self.redirect(f"/jobs/{job.id}")
         if path == "/quit":
             self.html(page("Red Sun", "<p>Red Sun has quit. You can close this tab.</p>"))
@@ -639,15 +635,15 @@ class Handler(BaseHTTPRequestHandler):
         if not files:
             kinds = ", ".join(sorted(core.SUPPORTED))
             return self.html(render_form(fields, f"No supported images found there (supported: {kinds})."), 400)
+        root = core.source_folder(source)
+        chosen = clean_path(fields["out_dir"]) if fields.get("out_dir", "").strip() else None
         try:
-            if fields.get("out_dir", "").strip():
-                out_dir = clean_path(fields["out_dir"])
-                out_dir.mkdir(parents=True, exist_ok=True)
-            else:
-                out_dir = create_run_dir(source)
+            out_dirs = core.output_dirs(files, root, chosen)
+            for d in out_dirs.values():
+                d.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             return self.html(render_form(fields, f"Cannot create the output folder ({exc}). Choose an output folder you can write to."), 400)
-        job = start_job(settings, files, out_dir)
+        job = start_job(settings, files, out_dirs, root)
         self.redirect(f"/jobs/{job.id}")
 
     def log_message(self, fmt: str, *args) -> None:  # keep launcher logs readable, one line per request

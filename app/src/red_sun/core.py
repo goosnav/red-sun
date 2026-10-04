@@ -466,6 +466,29 @@ def next_run_dir(root: Path) -> Path:
     return root / f"red-sun-run-{max(numbers, default=0) + 1:03d}"
 
 
+def create_run_dir(folder: Path) -> Path:
+    """Make the next red-sun-run-NNN inside folder; the exclusive mkdir is the race guard."""
+    while True:
+        candidate = next_run_dir(folder)
+        try:
+            candidate.mkdir(parents=False, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            continue
+
+
+def output_dirs(files: list[Path], root: Path, out_dir: Path | None = None) -> dict[Path, Path]:
+    """Every folder that holds images gets its own output folder.
+
+    Default: a new red-sun-run-NNN inside each of those folders (numbered per folder).
+    With a chosen out_dir: the folder tree is mirrored beneath it.
+    """
+    folders = sorted({f.parent for f in files})
+    if out_dir is not None:
+        return {d: out_dir / d.relative_to(root) if d.is_relative_to(root) else out_dir for d in folders}
+    return {d: create_run_dir(d) for d in folders}
+
+
 def save(result: Image.Image, stem: Path, fmt: str) -> list[Path]:
     outputs = []
     for ext in EXTENSIONS[fmt]:
@@ -480,28 +503,35 @@ def save(result: Image.Image, stem: Path, fmt: str) -> list[Path]:
 
 def run_batch(
     files: list[Path],
-    out_dir: Path,
+    out_dirs: Path | dict[Path, Path],
     s: Settings,
     progress: Callable[[int, int, Result], None] | None = None,
 ) -> list[Result]:
-    """Process every file into out_dir; one bad file never stops the batch."""
+    """Process every file; one bad file never stops the batch.
+
+    out_dirs maps each source folder to its output folder (see output_dirs); a single Path sends everything there.
+    """
     s.validate()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "settings.json").write_text(json.dumps(asdict(s), indent=2), encoding="utf-8")
+    if isinstance(out_dirs, Path):
+        out_dirs = {f.parent: out_dirs for f in files}
+    for out in set(out_dirs.values()):
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "settings.json").write_text(json.dumps(asdict(s), indent=2), encoding="utf-8")
     results: list[Result] = []
-    used: set[str] = set()
+    used: set[Path] = set()
     for index, src in enumerate(files, 1):
         result = Result(source=src)
         try:
             with Image.open(src) as original:
                 original.load()
                 done = process(original, s)
-            base = stem = f"{src.stem}_redsun_{s.tag(done.mode)}"
+            out = out_dirs[src.parent]
+            base = stem = out / f"{src.stem}_redsun_{s.tag(done.mode)}"
             k = 2
-            while stem in used:  # same file name from two folders in one batch
-                stem, k = f"{base}-{k}", k + 1
+            while stem in used:  # e.g. "Comic 17.tif" and "Comic 17.tiff" in the same folder
+                stem, k = base.with_name(f"{base.name}-{k}"), k + 1
             used.add(stem)
-            result.outputs = save(done.image, out_dir / stem, s.fmt)
+            result.outputs = save(done.image, stem, s.fmt)
             result.width, result.height = done.image.size
             result.colors, result.mode, result.factor = done.colors, done.mode, done.factor
         except Exception as exc:  # noqa: BLE001 - report and continue

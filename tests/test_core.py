@@ -285,3 +285,31 @@ def test_dotted_file_names_never_overwrite_each_other(tmp_path: Path):
     assert len(names) == len(set(names)) == 12
     assert "08.30.2025 Comic 11_redsun_bw.png" in names and "08.30.2025 Comic 17_redsun_bw-2.bmp" in names
     assert len(list((tmp_path / "out").glob("*.png"))) == 4
+
+
+def test_each_folder_gets_its_own_run_folder(tmp_path: Path):
+    """Recursive batches: every folder that has images gets red-sun-run-NNN inside it, numbered per folder."""
+    root = tmp_path / "comics"
+    for folder in (root, root / "issue 1", root / "issue 1" / "covers", root / "empty"):
+        folder.mkdir(parents=True, exist_ok=True)
+    for folder, name in ((root, "a.png"), (root / "issue 1", "p1.png"), (root / "issue 1", "p2.png"), (root / "issue 1" / "covers", "c.png")):
+        Image.new("L", (40, 30), 90).save(folder / name)
+    (root / "issue 1" / "red-sun-run-004").mkdir()                       # an older run in one folder only
+    files = core.collect_files(root, recursive=True)
+    dirs = core.output_dirs(files, root)
+    assert dirs == {
+        root: root / "red-sun-run-001",
+        root / "issue 1": root / "issue 1" / "red-sun-run-005",             # numbered per folder
+        root / "issue 1" / "covers": root / "issue 1" / "covers" / "red-sun-run-001",
+    }
+    assert not (root / "empty" / "red-sun-run-001").exists()             # no images, no run folder
+    results = core.run_batch(files, dirs, core.Settings(min_output_width=0))
+    assert all(r.outputs and r.outputs[0].parent == dirs[r.source.parent] for r in results)
+    assert (root / "issue 1" / "red-sun-run-005" / "settings.json").exists()
+    # a second recursive run never picks up the first run's outputs
+    assert core.collect_files(root, recursive=True) == files
+
+    # a chosen output folder mirrors the tree instead
+    out = tmp_path / "exports"
+    mirrored = core.output_dirs(files, root, out)
+    assert mirrored[root / "issue 1" / "covers"] == out / "issue 1" / "covers" and mirrored[root] == out

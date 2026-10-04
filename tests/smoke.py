@@ -82,10 +82,12 @@ def main() -> int:
             time.sleep(0.2)
         else:
             raise AssertionError("batch never finished")
-        assert "3 of 3 images saved" in page, page
+        assert "3 of 3 images saved into 2 output folders" in page, page
         run = photos / "red-sun-run-001"
         names = sorted(p.name for p in run.iterdir())
-        assert names == ["blue_redsun_win16-pattern.png", "gray_redsun_bw.png", "red_redsun_win16-pattern.png", "settings.json"], names  # B&W has its own (undithered) look
+        assert names == ["gray_redsun_bw.png", "red_redsun_win16-pattern.png", "settings.json"], names  # B&W has its own (undithered) look
+        sub_names = sorted(p.name for p in (photos / "sub" / "red-sun-run-001").iterdir())
+        assert sub_names == ["blue_redsun_win16-pattern.png", "settings.json"], sub_names  # the subfolder gets its own run folder
         with Image.open(run / "red_redsun_win16-pattern.png") as im:
             assert im.mode == "P" and im.size == (800, 600), (im.mode, im.size)   # 400 px source x2
         assert urllib.request.urlopen(job_url + "/out/0", timeout=10).headers["Content-Type"] == "image/png"
@@ -106,6 +108,7 @@ def main() -> int:
                 break
             time.sleep(0.2)
         assert "3 of 3 images saved" in page and str(photos / "red-sun-run-002") in page, page
+        assert str(photos / "sub" / "red-sun-run-002") in page, page
 
         # settings persisted on disk and restored by a fresh GET /
         assert (config / "settings.json").exists()
